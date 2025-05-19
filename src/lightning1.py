@@ -2,7 +2,6 @@ import numpy as np
 import os
 import pytorch_lightning as pl
 import torch
-import wandb
 
 from src import metrics, utils
 from src.const import LIGAND_SIZE_DIST, GEOM_NUMBER_OF_RESIDUE_TYPES
@@ -11,13 +10,9 @@ from src.edm import EDM
 from src.datasets1 import (
     MOADDataset, create_templates_for_generation, get_dataloader, collate, molecule_feat_mask
 )
-from src.ligand_size import DistributionNodes
 from src.molecule_builder import build_molecules
-from src.visualizer import save_xyz_file, visualize_chain
 from typing import Dict, List, Optional
 from tqdm import tqdm
-
-from pdb import set_trace
 
 def get_activation(activation):
     if activation == 'silu':
@@ -102,7 +97,6 @@ class DDPM(pl.LightningModule):
             loss_type=diffusion_loss_type,
             norm_values=normalize_factors,
         )
-        self.ligand_size_sampler = DistributionNodes(LIGAND_SIZE_DIST)
 
     def setup(self, stage: Optional[str] = None):
         dataset_type = MOADDataset

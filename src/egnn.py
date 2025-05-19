@@ -104,7 +104,7 @@ class EquivariantUpdate(nn.Module):
         self.normalization_factor = normalization_factor
         self.aggregation_method = aggregation_method
 
-    def coord_model(self, h, coord, edge_index, coord_diff, edge_attr, edge_mask, linker_mask):
+    def coord_model(self, h, coord, edge_index, coord_diff, edge_attr, edge_mask, ligand_mask):
         row, col = edge_index
         input_tensor = torch.cat([h[row], h[col], edge_attr], dim=1)
         if self.tanh:
@@ -116,16 +116,16 @@ class EquivariantUpdate(nn.Module):
         agg = unsorted_segment_sum(trans, row, num_segments=coord.size(0),
                                    normalization_factor=self.normalization_factor,
                                    aggregation_method=self.aggregation_method)
-        if linker_mask is not None:
-            agg = agg * linker_mask
+        if ligand_mask is not None:
+            agg = agg * ligand_mask
 
         coord = coord + agg
         return coord
 
     def forward(
-            self, h, coord, edge_index, coord_diff, edge_attr=None, linker_mask=None, node_mask=None, edge_mask=None
+            self, h, coord, edge_index, coord_diff, edge_attr=None, ligand_mask=None, node_mask=None, edge_mask=None
     ):
-        coord = self.coord_model(h, coord, edge_index, coord_diff, edge_attr, edge_mask, linker_mask)
+        coord = self.coord_model(h, coord, edge_index, coord_diff, edge_attr, edge_mask, ligand_mask)
         if node_mask is not None:
             coord = coord * node_mask
         return coord
@@ -160,7 +160,7 @@ class EquivariantBlock(nn.Module):
         else:
             self.to('cpu')
 
-    def forward(self, h, x, edge_index, node_mask=None, linker_mask=None, edge_mask=None, edge_attr=None):
+    def forward(self, h, x, edge_index, node_mask=None, ligand_mask=None, edge_mask=None, edge_attr=None):
         # Edit Emiel: Remove velocity as input
         distances, coord_diff = coord2diff(x, edge_index, self.norm_constant)
         if self.sin_embedding is not None:
@@ -173,7 +173,7 @@ class EquivariantBlock(nn.Module):
             edge_index=edge_index,
             coord_diff=coord_diff,
             edge_attr=edge_attr,
-            linker_mask=linker_mask,
+            ligand_mask=ligand_mask,
             node_mask=node_mask,
             edge_mask=edge_mask,
         )
@@ -221,7 +221,7 @@ class EGNN(nn.Module):
         else:
             self.to('cpu')
 
-    def forward(self, h, x, edge_index, node_mask=None, linker_mask=None, edge_mask=None):
+    def forward(self, h, x, edge_index, node_mask=None, ligand_mask=None, edge_mask=None):
         # Edit Emiel: Remove velocity as input
         distances, _ = coord2diff(x, edge_index)
         if self.sin_embedding is not None:
@@ -232,7 +232,7 @@ class EGNN(nn.Module):
             h, x = self._modules["e_block_%d" % i](
                 h, x, edge_index,
                 node_mask=node_mask,
-                linker_mask=linker_mask,
+                ligand_mask=ligand_mask,
                 edge_mask=edge_mask,
                 edge_attr=distances
             )
@@ -318,7 +318,7 @@ class Dynamics(nn.Module):
 
         self.edge_cache = {}
 
-    def forward(self, t, xh, node_mask, linker_mask, edge_mask, context):
+    def forward(self, t, xh, node_mask, ligand_mask, edge_mask, context):
         """
         - t: (B)
         - xh: (B, N, D), where D = 3 + nf
@@ -333,8 +333,8 @@ class Dynamics(nn.Module):
         edges = self.get_edges(n_nodes, bs)  # (2, B*N)
         node_mask = node_mask.view(bs * n_nodes, 1)  # (B*N, 1)
 
-        if linker_mask is not None:
-            linker_mask = linker_mask.view(bs * n_nodes, 1)  # (B*N, 1)
+        if ligand_mask is not None:
+            ligand_mask = ligand_mask.view(bs * n_nodes, 1)  # (B*N, 1)
 
         # Reshaping node features & adding time feature
         xh = xh.view(bs * n_nodes, -1).clone() * node_mask  # (B*N, D)
@@ -360,7 +360,7 @@ class Dynamics(nn.Module):
             x,
             edges,
             node_mask=node_mask,
-            linker_mask=linker_mask,
+            ligand_mask=ligand_mask,
             edge_mask=edge_mask
         )
         vel = (x_final - x) * node_mask  # This masking operation is redundant but just in case

@@ -65,7 +65,7 @@ def remove_mean_with_mask(x, node_mask):
 
 def remove_partial_mean_with_mask(x, node_mask, center_of_mass_mask):
     """
-    Subtract center of mass of fragments from coordinates of all atoms
+    Subtract center of mass of protein from coordinates of all atoms
     """
     x_masked = x * center_of_mass_mask
     N = center_of_mass_mask.sum(1, keepdims=True)

@@ -50,17 +50,17 @@ GEOM_CHARGES = {'C': 6, 'O': 8, 'N': 7, 'F': 9, 'S': 16, 'Cl': 17, 'Br': 35, 'I'
 
 # Dataset keys
 DATA_LIST_ATTRS = {
-    'uuid', 'name', 'fragments_smi', 'linker_smi', 'num_atoms'
+    'uuid', 'name', 'protein_smi', 'ligand_smi', 'num_atoms'
 }
 DATA_ATTRS_TO_PAD = {
-    'positions', 'one_hot', 'charges', 'anchors', 'fragment_mask', 'linker_mask', 'pocket_mask', 'fragment_only_mask'
+    'positions', 'one_hot', 'charges', 'anchors', 'protein_mask', 'ligand_mask', 'pocket_mask', 'protein_only_mask'
 }
 DATA_ATTRS_TO_ADD_LAST_DIM = {
-    'charges', 'anchors', 'fragment_mask', 'linker_mask', 'pocket_mask', 'fragment_only_mask'
+    'charges', 'anchors', 'protein_mask', 'ligand_mask', 'pocket_mask', 'protein_only_mask'
 }
 
-# Distribution of linker size in train data
-LINKER_SIZE_DIST = {
+# Distribution of ligand size in train data
+LIGAND_SIZE_DIST = {
     4: 85540,
     3: 113928,
     6: 70946,
@@ -191,12 +191,12 @@ COLORS = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8']
 # RADII = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
 RADII = [0.77, 0.77, 0.77, 0.77, 0.77, 0.77, 0.77, 0.77, 0.77]
 
-ZINC_TRAIN_LINKER_ID2SIZE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-ZINC_TRAIN_LINKER_SIZE2ID = {
+ZINC_TRAIN_LIGAND_ID2SIZE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+ZINC_TRAIN_LIGAND_SIZE2ID = {
     size: idx
-    for idx, size in enumerate(ZINC_TRAIN_LINKER_ID2SIZE)
+    for idx, size in enumerate(ZINC_TRAIN_LIGAND_ID2SIZE)
 }
-ZINC_TRAIN_LINKER_SIZE_WEIGHTS = [
+ZINC_TRAIN_LIGAND_SIZE_WEIGHTS = [
     3.47347831e-01,
     4.63079100e-01,
     5.12370917e-01,
@@ -210,15 +210,15 @@ ZINC_TRAIN_LINKER_SIZE_WEIGHTS = [
 ]
 
 
-GEOM_TRAIN_LINKER_ID2SIZE = [
+GEOM_TRAIN_LIGAND_ID2SIZE = [
     3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 36, 38, 41
 ]
-GEOM_TRAIN_LINKER_SIZE2ID = {
+GEOM_TRAIN_LIGAND_SIZE2ID = {
     size: idx
-    for idx, size in enumerate(GEOM_TRAIN_LINKER_ID2SIZE)
+    for idx, size in enumerate(GEOM_TRAIN_LIGAND_ID2SIZE)
 }
-GEOM_TRAIN_LINKER_SIZE_WEIGHTS = [
+GEOM_TRAIN_LIGAND_SIZE_WEIGHTS = [
     1.07790681e+00, 4.54693604e-01, 3.62575713e-01, 3.75199484e-01,
     3.67812588e-01, 3.92388528e-01, 3.83421054e-01, 4.26924670e-01,
     4.92768040e-01, 4.99761944e-01, 4.92342726e-01, 5.71456905e-01,

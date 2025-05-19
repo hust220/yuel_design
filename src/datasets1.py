@@ -192,17 +192,17 @@ class MOADDataset(Dataset):
                 continue
             # print(222,one_hot)
 
-            fragment_mask = np.zeros(pocket_size + mol_size)
-            linker_mask = np.zeros(pocket_size + mol_size)
-            fragment_mask[:pocket_size] = 1
-            linker_mask[pocket_size:] = 1
+            protein_mask = np.zeros(pocket_size + mol_size)
+            ligand_mask = np.zeros(pocket_size + mol_size)
+            protein_mask[:pocket_size] = 1
+            ligand_mask[pocket_size:] = 1
 
             data.append({
                 'name': molecule_name,
                 'positions': torch.tensor(positions, dtype=const.TORCH_FLOAT, device=device),
                 'one_hot': torch.tensor(one_hot, dtype=const.TORCH_FLOAT, device=device),
-                'fragment_mask': torch.tensor(fragment_mask, dtype=const.TORCH_FLOAT, device=device),
-                'linker_mask': torch.tensor(linker_mask, dtype=const.TORCH_FLOAT, device=device),
+                'protein_mask': torch.tensor(protein_mask, dtype=const.TORCH_FLOAT, device=device),
+                'ligand_mask': torch.tensor(ligand_mask, dtype=const.TORCH_FLOAT, device=device),
             })
 
         return data
@@ -223,7 +223,7 @@ def collate(batch):
             continue
         raise Exception(f'Unknown batch key: {key}')
 
-    atom_mask = (out['fragment_mask'].bool() | out['linker_mask'].bool()).to(const.TORCH_INT)
+    atom_mask = (out['protein_mask'].bool() | out['ligand_mask'].bool()).to(const.TORCH_INT)
     out['atom_mask'] = atom_mask[:, :, None]
 
     batch_size, n_nodes = atom_mask.size()
@@ -250,35 +250,35 @@ def collate(batch):
 def get_dataloader(dataset, batch_size, collate_fn=collate, shuffle=False):
     return DataLoader(dataset, batch_size, collate_fn=collate_fn, shuffle=shuffle)
 
-def create_template(tensor, fragment_size, linker_size, fill=0):
-    values_to_keep = tensor[:fragment_size]
-    values_to_add = torch.ones(linker_size, tensor.shape[1], dtype=values_to_keep.dtype, device=values_to_keep.device)
+def create_template(tensor, protein_size, ligand_size, fill=0):
+    values_to_keep = tensor[:protein_size]
+    values_to_add = torch.ones(ligand_size, tensor.shape[1], dtype=values_to_keep.dtype, device=values_to_keep.device)
     values_to_add = values_to_add * fill
     return torch.cat([values_to_keep, values_to_add], dim=0)
 
-def create_templates_for_generation(data, linker_sizes):
+def create_templates_for_generation(data, ligand_sizes):
     """
-    Takes data batch and new linker size and returns data batch where fragment-related data is the same
-    but linker-related data is replaced with zero templates with new linker sizes
+    Takes data batch and new ligand size and returns data batch where protein-related data is the same
+    but ligand-related data is replaced with zero templates with new ligand sizes
     """
     decoupled_data = []
-    for i, linker_size in enumerate(linker_sizes):
+    for i, ligand_size in enumerate(ligand_sizes):
         data_dict = {}
-        fragment_mask = data['fragment_mask'][i].squeeze()
-        fragment_size = fragment_mask.sum().int()
+        protein_mask = data['protein_mask'][i].squeeze()
+        protein_size = protein_mask.sum().int()
         for k, v in data.items():
             if k == 'num_atoms':
-                # Computing new number of atoms (fragment_size + linker_size)
-                data_dict[k] = fragment_size + linker_size
+                # Computing new number of atoms (protein_size + ligand_size)
+                data_dict[k] = protein_size + ligand_size
                 continue
             if k in const.DATA_LIST_ATTRS:
                 # These attributes are written without modification
                 data_dict[k] = v[i]
                 continue
             if k in const.DATA_ATTRS_TO_PAD:
-                # Should write fragment-related data + (zeros x linker_size)
-                fill_value = 1 if k == 'linker_mask' else 0
-                template = create_template(v[i], fragment_size, linker_size, fill=fill_value)
+                # Should write protein-related data + (zeros x ligand_size)
+                fill_value = 1 if k == 'ligand_mask' else 0
+                template = create_template(v[i], protein_size, ligand_size, fill=fill_value)
                 if k in const.DATA_ATTRS_TO_ADD_LAST_DIM:
                     template = template.squeeze(-1)
                 data_dict[k] = template

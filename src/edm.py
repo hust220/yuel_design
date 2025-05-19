@@ -37,13 +37,13 @@ class EDM(torch.nn.Module):
         self.norm_values = norm_values
         self.norm_biases = norm_biases
 
-    def forward(self, x, h, node_mask, fragment_mask, linker_mask, edge_mask, feat_mask, context=None):
+    def forward(self, x, h, node_mask, protein_mask, ligand_mask, edge_mask, feat_mask, context=None):
         # Normalization and concatenation
         x, h = self.normalize(x, h)
         xh = torch.cat([x, h], dim=2)
 
         # Volume change loss term
-        delta_log_px = self.delta_log_px(linker_mask).mean()
+        delta_log_px = self.delta_log_px(ligand_mask).mean()
 
         # Sample t
         t_int = torch.randint(0, self.T + 1, size=(x.size(0), 1), device=x.device).float()
@@ -64,25 +64,25 @@ class EDM(torch.nn.Module):
         sigma_t = self.sigma(gamma_t, x)
 
         # Sample noise
-        # Note: only for linker
-        eps_t = self.sample_combined_position_feature_noise(n_samples=x.size(0), n_nodes=x.size(1), mask=linker_mask)
+        # Note: only for ligand
+        eps_t = self.sample_combined_position_feature_noise(n_samples=x.size(0), n_nodes=x.size(1), mask=ligand_mask)
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
-        # Note: keep fragments unchanged
+        # Note: keep proteins unchanged
         # print(t_int[0], s_int[0], alpha_t[0,0,0], sigma_t[0,0,0])
         z_t = alpha_t * xh + sigma_t * eps_t
-        z_t = xh * fragment_mask + z_t * linker_mask
+        z_t = xh * protein_mask + z_t * ligand_mask
 
         # Neural net prediction
         eps_t_hat = self.dynamics.forward(
             xh=z_t,
             t=t,
             node_mask=node_mask,
-            linker_mask=linker_mask,
+            ligand_mask=ligand_mask,
             context=context,
             edge_mask=edge_mask,
         )
-        eps_t_hat = eps_t_hat * linker_mask
+        eps_t_hat = eps_t_hat * ligand_mask
 
         # Computing basic error (further used for computing NLL and L2-loss)
         # feat_mask = torch.cat([torch.ones(self.n_dims, device=feat_mask.device), feat_mask])
@@ -90,13 +90,13 @@ class EDM(torch.nn.Module):
         # error_t = self.sum_except_batch(((eps_t - eps_t_hat)*feat_mask) ** 2)
 
         # Computing L2-loss for t>0
-        normalization = (self.n_dims + self.in_node_nf) * self.numbers_of_nodes(linker_mask)
-        # normalization = feat_mask.sum() * self.numbers_of_nodes(linker_mask)
+        normalization = (self.n_dims + self.in_node_nf) * self.numbers_of_nodes(ligand_mask)
+        # normalization = feat_mask.sum() * self.numbers_of_nodes(ligand_mask)
         l2_loss = error_t / normalization
         l2_loss = l2_loss.mean()
 
         # The KL between q(z_T | x) and p(z_T) = Normal(0, 1) (should be close to zero)
-        kl_prior = self.kl_prior(xh, linker_mask).mean() # 这里KL散度好像没什么作用，因为没有用到网络的任何参数，而仅仅只是取决于xh [JW]
+        kl_prior = self.kl_prior(xh, ligand_mask).mean() # 这里KL散度好像没什么作用，因为没有用到网络的任何参数，而仅仅只是取决于xh [JW]
 
         # Computing NLL middle term
         SNR_weight = (self.SNR(gamma_s - gamma_t) - 1).squeeze(1).squeeze(1)
@@ -110,11 +110,11 @@ class EDM(torch.nn.Module):
         if t_is_zero.sum() > 0:
             # The _constants_ depending on sigma_0 from the
             # cross entropy term E_q(z0 | x) [log p(x | z0)]
-            neg_log_constants = -self.log_constant_of_p_x_given_z0(x, linker_mask)
+            neg_log_constants = -self.log_constant_of_p_x_given_z0(x, ligand_mask)
 
             # Computes the L_0 term (even if gamma_t is not actually gamma_0)
             # and selected only relevant via masking
-            loss_term_0 = -self.log_p_xh_given_z0_without_constants(h, z_t, gamma_t, eps_t, eps_t_hat, linker_mask)
+            loss_term_0 = -self.log_p_xh_given_z0_without_constants(h, z_t, gamma_t, eps_t, eps_t_hat, ligand_mask)
             loss_term_0 = loss_term_0 + neg_log_constants
             loss_term_0 = (loss_term_0 * t_is_zero).sum() / t_is_zero.sum()
 
@@ -127,7 +127,7 @@ class EDM(torch.nn.Module):
         return delta_log_px, kl_prior, loss_term_t, loss_term_0, l2_loss, noise_t, noise_0
 
     @torch.no_grad()
-    def sample_chain(self, x, h, node_mask, fragment_mask, linker_mask, edge_mask, context, keep_frames=None):
+    def sample_chain(self, x, h, node_mask, protein_mask, ligand_mask, edge_mask, context, keep_frames=None):
         n_samples = x.size(0)
         n_nodes = x.size(1)
 
@@ -138,10 +138,10 @@ class EDM(torch.nn.Module):
         xh = torch.cat([x, h], dim=2)
 
 #        print(111)
-        # Initial linker sampling from N(0, I)
-        z = self.sample_combined_position_feature_noise(n_samples, n_nodes, mask=linker_mask)
+        # Initial ligand sampling from N(0, I)
+        z = self.sample_combined_position_feature_noise(n_samples, n_nodes, mask=ligand_mask)
         # print('z', z[0,:,:3])
-        z = xh * fragment_mask + z * linker_mask
+        z = xh * protein_mask + z * ligand_mask
         # print('z', z[0,:,:3])
 
 #        print(111)
@@ -163,13 +163,13 @@ class EDM(torch.nn.Module):
 #            print(t_array)
 
 #            print(113)
-            z = self.sample_p_zs_given_zt_only_linker(
+            z = self.sample_p_zs_given_zt_only_ligand(
                 s=s_array,
                 t=t_array,
                 z_t=z,
                 node_mask=node_mask,
-                fragment_mask=fragment_mask,
-                linker_mask=linker_mask,
+                protein_mask=protein_mask,
+                ligand_mask=ligand_mask,
                 edge_mask=edge_mask,
                 context=context,
             )
@@ -178,11 +178,11 @@ class EDM(torch.nn.Module):
 
 #        print(111)
         # Finally sample p(x, h | z_0)
-        x, h = self.sample_p_xh_given_z0_only_linker(
+        x, h = self.sample_p_xh_given_z0_only_ligand(
             z_0=z,
             node_mask=node_mask,
-            fragment_mask=fragment_mask,
-            linker_mask=linker_mask,
+            protein_mask=protein_mask,
+            ligand_mask=ligand_mask,
             edge_mask=edge_mask,
             context=context,
         )
@@ -193,8 +193,8 @@ class EDM(torch.nn.Module):
         return chain
 #        return pred
 
-    def sample_p_zs_given_zt_only_linker(self, s, t, z_t, node_mask, fragment_mask, linker_mask, edge_mask, context):
-        """Samples from zs ~ p(zs | zt). Only used during sampling. Samples only linker features and coords"""
+    def sample_p_zs_given_zt_only_ligand(self, s, t, z_t, node_mask, protein_mask, ligand_mask, edge_mask, context):
+        """Samples from zs ~ p(zs | zt). Only used during sampling. Samples only ligand features and coords"""
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -207,11 +207,11 @@ class EDM(torch.nn.Module):
             xh=z_t,
             t=t,
             node_mask=node_mask,
-            linker_mask=linker_mask,
+            ligand_mask=ligand_mask,
             context=context,
             edge_mask=edge_mask,
         )
-        eps_hat = eps_hat * linker_mask
+        eps_hat = eps_hat * ligand_mask
 
         # Compute mu for p(z_s | z_t)
         mu = z_t / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat
@@ -220,13 +220,13 @@ class EDM(torch.nn.Module):
         sigma = sigma_t_given_s * sigma_s / sigma_t
 
         # Sample z_s given the parameters derived from zt
-        z_s = self.sample_normal(mu, sigma, linker_mask)
-        z_s = z_t * fragment_mask + z_s * linker_mask # zt的 fragment 始终保持不变
+        z_s = self.sample_normal(mu, sigma, ligand_mask)
+        z_s = z_t * protein_mask + z_s * ligand_mask # zt的 protein 始终保持不变
 
         return z_s
 
-    def sample_p_xh_given_z0_only_linker(self, z_0, node_mask, fragment_mask, linker_mask, edge_mask, context):
-        """Samples x ~ p(x|z0). Samples only linker features and coords"""
+    def sample_p_xh_given_z0_only_ligand(self, z_0, node_mask, protein_mask, ligand_mask, edge_mask, context):
+        """Samples x ~ p(x|z0). Samples only ligand features and coords"""
         zeros = torch.zeros(size=(z_0.size(0), 1), device=z_0.device)
         gamma_0 = self.gamma(zeros)
 
@@ -236,15 +236,15 @@ class EDM(torch.nn.Module):
             t=zeros,
             xh=z_0,
             node_mask=node_mask,
-            linker_mask=linker_mask,
+            ligand_mask=ligand_mask,
             edge_mask=edge_mask,
             context=context
         )
-        eps_hat = eps_hat * linker_mask
+        eps_hat = eps_hat * ligand_mask
 
         mu_x = self.compute_x_pred(eps_t=eps_hat, z_t=z_0, gamma_t=gamma_0)
-        xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=linker_mask)
-        xh = z_0 * fragment_mask + xh * linker_mask
+        xh = self.sample_normal(mu=mu_x, sigma=sigma_x, node_mask=ligand_mask)
+        xh = z_0 * protein_mask + xh * ligand_mask
 
         x, h = xh[:, :, :self.n_dims], xh[:, :, self.n_dims:]
         x, h = self.unnormalize(x, h)
