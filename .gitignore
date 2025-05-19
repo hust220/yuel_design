@@ -31,7 +31,9 @@ data/*
 
 # Include Python files in analysis and its subdirectories
 analysis/*
+!analysis/
 !analysis/*.py
+!analysis/**/
 !analysis/**/*.py
 
 # Include fpscores.pkl.gz in resources
