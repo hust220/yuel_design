@@ -1,0 +1,65 @@
+# Exclude everything
+*
+!.gitignore
+!db_utils.py
+!README.md
+!train_yuel_design.py
+!yuel_design.py
+!LICENSE
+
+# Don't exclude the src, configs, data/MOAD, analysis, and resources directories
+!src/
+!configs/
+!data/
+!data/MOAD/
+!analysis/
+!resources/
+
+# Exclude everything in src except Python files
+src/*
+!src/*.py
+
+# Include everything in configs
+configs/*
+!configs/*
+
+# Include Python files in data and its subdirectories, and README.md in data/MOAD
+data/*
+!data/*.py
+!data/**/*.py
+!data/MOAD/README.md
+
+# Include Python files in analysis and its subdirectories
+analysis/*
+!analysis/*.py
+!analysis/**/*.py
+
+# Include fpscores.pkl.gz in resources
+resources/*
+!resources/fpscores.pkl.gz
+
+# Exclude Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Exclude virtual environment
+venv/
+env/
+.env/
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude common data and model files
+*.pkl
+*.ckpt
+*.sdf
+*.pdb
+*.mol
+*.xyz
+*.csv
+*.txt

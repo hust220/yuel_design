@@ -1,0 +1,38 @@
+exp_name: 'moad'
+data: datasets
+train_data_prefix: MOAD_val
+val_data_prefix: MOAD_val
+checkpoints: models
+logs: logs
+device: gpu
+log_iterations: 20
+wandb_entity: null
+enable_progress_bar: True
+
+model: egnn_dynamics
+lr: 2.0e-4
+batch_size: 16
+n_layers: 6
+n_epochs: 1000
+test_epochs: 20
+n_stability_samples: 5
+nf: 64
+activation: silu
+attention: False
+condition_time: True
+tanh: False
+norm_constant: 0.000001
+inv_sublayers: 2
+include_charges: False
+diffusion_loss_type: l2
+data_augmentation: True
+center_of_mass: fragments
+graph_type: FC
+
+sin_embedding: False
+normalization_factor: 100
+normalize_factors: [1, 4, 10]
+aggregation_method: 'sum'
+normalization: batch_norm
+
+resume:
