@@ -174,14 +174,6 @@ class DDPM(pl.LightningModule):
 
         training_metrics = {
             'loss': loss,
-            # 'delta_log_px': delta_log_px,
-            # 'kl_prior': kl_prior,
-            # 'loss_term_t': loss_term_t,
-            # 'loss_term_0': loss_term_0,
-            # 'l2_loss': l2_loss,
-            # 'vlb_loss': vlb_loss,
-            # 'noise_t': noise_t,
-            # 'noise_0': noise_0
         }
         if self.log_iterations is not None and self.global_step % self.log_iterations == 0:
             for metric_name, metric in training_metrics.items():
@@ -201,14 +193,6 @@ class DDPM(pl.LightningModule):
             raise NotImplementedError(self.loss_type)
         rt = {
             'loss': loss,
-            # 'delta_log_px': delta_log_px,
-            # 'kl_prior': kl_prior,
-            # 'loss_term_t': loss_term_t,
-            # 'loss_term_0': loss_term_0,
-            # 'l2_loss': l2_loss,
-            # 'vlb_loss': vlb_loss,
-            # 'noise_t': noise_t,
-            # 'noise_0': noise_0
         }
         self.validation_step_outputs.append(rt)
         return rt
@@ -224,23 +208,9 @@ class DDPM(pl.LightningModule):
             raise NotImplementedError(self.loss_type)
         rt = {
             'loss': loss,
-            # 'delta_log_px': delta_log_px,
-            # 'kl_prior': kl_prior,
-            # 'loss_term_t': loss_term_t,
-            # 'loss_term_0': loss_term_0,
-            # 'l2_loss': l2_loss,
-            # 'vlb_loss': vlb_loss,
-            # 'noise_t': noise_t,
-            # 'noise_0': noise_0
         }
         self.test_step_outputs.append(rt)
         return rt
-
-    # def on_train_epoch_end(self):
-    #     for metric in self.training_step_outputs[0].keys():
-    #         avg_metric = self.aggregate_metric(self.training_step_outputs, metric)
-    #         self.metrics.setdefault(f'{metric}/train', []).append(avg_metric)
-    #         self.log(f'{metric}/train', avg_metric, prog_bar=True)
 
     def on_validation_epoch_end(self):
         for metric in self.validation_step_outputs[0].keys():
