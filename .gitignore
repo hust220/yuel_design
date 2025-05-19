@@ -39,6 +39,12 @@ analysis/*
 !analysis/*.py
 !analysis/**/
 !analysis/**/*.py
+!analysis/evolution_analyses/mol_004.pdb
+
+# Include specific PDB and MOL files
+!2req_0.mol
+!2req_pocket.pdb
+!2req_protein.pdb
 
 # Include Python files in tests and its subdirectories
 tests/*

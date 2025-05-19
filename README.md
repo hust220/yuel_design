@@ -1,5 +1,6 @@
 # YuelDesign: Equivariant 3D-Conditional Diffusion Model for Molecular Linker Design
 
+The design of molecules for flexible protein pockets represents a significant challenge in structure-based drug discovery, as proteins often undergo conformational changes upon ligand binding. While deep learning-based approaches have shown promise in molecular generation, they typically treat protein pockets as rigid structures, limiting their ability to capture the dynamic nature of protein-ligand interactions. Here, we introduce YuelDesign, a novel diffusion-based framework specifically developed to address this challenge. YuelDesign employs a new protein encoding scheme with a fully connected graph representation to encode protein pocket flexibility, a systematic denoising process that refines both atomic properties and coordinates, and a specialized bond reconstruction module tailored for de novo generated molecules. Our results demonstrate that YuelDesign generates molecules with high validity, low large-ring formation rates, favorable drug-likeness, and low synthetic complexity. The generated molecules exhibit diverse chemical functional groups, including some not present in the training set. Redocking analysis reveals that the generated molecules exhibit docking energies comparable to native ligands. Additionally, a detailed analysis of the denoising process shows how the model systematically refines molecular structures through atom type transitions, bond dynamics, and conformational adjustments. Overall, YuelDesign presents a versatile framework for generating novel molecules tailored to flexible protein pockets, with promising implications for drug discovery applications.
 
 ## Environment Setup
 
@@ -46,21 +47,21 @@ python yuel_design.py \
 Parameters:
 
 Required:
-- `--model`: Path to the DiffLinker model
-- `--size`: Linker size, can be:
-  - A single integer
-  - Comma-separated integer range
-  - Path to a size prediction model
+* `--model`: Path to the DiffLinker model
+* `--size`: Linker size, can be:
+    - A single integer
+    - Comma-separated integer range
+    - Path to a size prediction model
 
 Input Source (choose one):
-- `--pocket`: Path to the file containing pocket atoms
-- `--dataset`: Path to the dataset
+* `--pocket`: Path to the file containing pocket atoms
+* `--dataset`: Path to the dataset
 
 Optional:
-- `--output`: Directory to save generated molecules (default: './')
-- `--n_samples`: Number of linkers to generate (default: 5)
-- `--random_seed`: Random seed (default: None)
-- `--trajectory`: Trajectory directory (default: None)
+* `--output`: Directory to save generated molecules (default: './')
+* `--n_samples`: Number of linkers to generate (default: 5)
+* `--random_seed`: Random seed (default: None)
+* `--trajectory`: Trajectory directory (default: None)
 
 ## Training
 
