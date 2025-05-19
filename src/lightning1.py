@@ -4,7 +4,7 @@ import pytorch_lightning as pl
 import torch
 
 from src import metrics, utils
-from src.const import LIGAND_SIZE_DIST, GEOM_NUMBER_OF_RESIDUE_TYPES
+from src.const import GEOM_NUMBER_OF_RESIDUE_TYPES
 from src.egnn import Dynamics
 from src.edm import EDM
 from src.datasets1 import (
@@ -37,7 +37,7 @@ class DDPM(pl.LightningModule):
         normalize_factors, model,
         data_path, train_data_prefix, val_data_prefix, batch_size, lr, torch_device, test_epochs, n_stability_samples,
         normalization=None, log_iterations=None, samples_dir=None, data_augmentation=False,
-        center_of_mass='protein', anchors_context=True, graph_type=None,
+        center_of_mass='protein', graph_type=None,
     ):
         super(DDPM, self).__init__()
 
@@ -58,7 +58,6 @@ class DDPM(pl.LightningModule):
 
         self.n_dims = n_dims
         self.num_classes = in_node_nf
-        self.anchors_context = anchors_context
 
         self.validation_step_outputs = []
         self.training_step_outputs = []
@@ -134,7 +133,6 @@ class DDPM(pl.LightningModule):
         h = data['one_hot']
         node_mask = data['atom_mask']
         edge_mask = data['edge_mask']
-        # anchors = data['anchors']
         protein_mask = data['protein_mask']
         ligand_mask = data['ligand_mask']
 
@@ -353,7 +351,6 @@ class DDPM(pl.LightningModule):
 
 #        print(x.shape, h.shape, node_mask.shape, edge_mask.shape, protein_mask.shape, ligand_mask.shape)
 
-        # Anchors and proteins labels are used as context
         context = protein_mask
 
         center_of_mass_mask = protein_mask

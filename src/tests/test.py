@@ -30,7 +30,7 @@ def rebuild_molecule(smiles):
     AllChem.EmbedMolecule(mol)
     mol = Chem.RemoveHs(mol)
     # Chem.UFFOptimizeMolecule(mol)
-    pos, one_hot, _ = parse_molecule(mol)
+    pos, one_hot = parse_molecule(mol)
     pos = torch.tensor(pos)
     one_hot = torch.tensor(one_hot)
     one_hot = one_hot[:,const.GEOM_NUMBER_OF_RESIDUE_TYPES:]

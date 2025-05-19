@@ -47,7 +47,6 @@ def main(args):
     )
 
     in_node_nf = GEOM_NUMBER_OF_ATOM_TYPES + GEOM_NUMBER_OF_RESIDUE_TYPES
-    anchors_context = not args.remove_anchors_context
     context_node_nf = 1
 
     ddpm = DDPM(
@@ -83,7 +82,6 @@ def main(args):
         samples_dir=samples_dir,
         data_augmentation=args.data_augmentation,
         center_of_mass=args.center_of_mass,
-        anchors_context=anchors_context,
         graph_type=args.graph_type,
     )
     checkpoint_callback = callbacks.ModelCheckpoint(
@@ -184,7 +182,6 @@ if __name__ == '__main__':
     p.add_argument('--normalization', type=str, default='batch_norm', help='batch_norm')
     p.add_argument('--wandb_entity', type=str, default='geometric', help='Entity (project) name')
     p.add_argument('--center_of_mass', type=str, default='fragments', help='Where to center the data: fragments | anchors')
-    p.add_argument('--remove_anchors_context', action='store_true', default=False, help='Remove anchors context')
     p.add_argument('--graph_type', type=str, default='FC', help='FC, 4A, FC-4A, FC-10A-4A')
     p.add_argument('--seed', type=int, default=42, help='Random seed')
 

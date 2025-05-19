@@ -63,12 +63,10 @@ def molecule_feat_mask():
 
 def parse_molecule(mol):
     one_hot = []
-    charges = []
     for atom in mol.GetAtoms():
         one_hot.append(atom_one_hot(atom.GetSymbol()))
-        charges.append(const.GEOM_CHARGES[atom.GetSymbol()])
     positions = mol.GetConformer().GetPositions()
-    return positions, np.array(one_hot), np.array(charges)
+    return positions, np.array(one_hot)
 
 def parse_pocket(rs):
     pocket_coords = []
