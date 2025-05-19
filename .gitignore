@@ -7,12 +7,13 @@
 !yuel_design.py
 !LICENSE
 
-# Don't exclude the src, configs, data/MOAD, analysis, and resources directories
+# Don't exclude the src, configs, data/MOAD, analysis, tests, and resources directories
 !src/
 !configs/
 !data/
 !data/MOAD/
 !analysis/
+!tests/
 !resources/
 
 # Exclude everything in src except Python files
@@ -35,6 +36,13 @@ analysis/*
 !analysis/*.py
 !analysis/**/
 !analysis/**/*.py
+
+# Include Python files in tests and its subdirectories
+tests/*
+!tests/
+!tests/*.py
+!tests/**/
+!tests/**/*.py
 
 # Include fpscores.pkl.gz in resources
 resources/*
