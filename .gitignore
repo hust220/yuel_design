@@ -16,9 +16,12 @@
 !tests/
 !resources/
 
-# Exclude everything in src except Python files
+# Include Python files in src and its subdirectories
 src/*
+!src/
 !src/*.py
+!src/**/
+!src/**/*.py
 
 # Include everything in configs
 configs/*

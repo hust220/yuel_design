@@ -334,7 +334,6 @@ class DDPM(pl.LightningModule):
 
                 bar.update(1)
 
-        # Our own & DeLinker metrics
         our_metrics = metrics.compute_metrics(
             pred_molecules=pred_molecules,
             true_molecules=true_molecules
