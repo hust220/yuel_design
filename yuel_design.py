@@ -3,22 +3,20 @@ import os
 import numpy as np
 
 import torch
-import subprocess
 from rdkit import Chem
 from Bio.PDB import PDBParser
 
 from src import const
-from src.datasets1 import (
-    collate, get_dataloader, MOADDataset, parse_residues, parse_pocket
+from src.datasets import (
+    collate, get_dataloader, ProteinLigandDataset, parse_residues, parse_pocket
 )
-from src.lightning1 import DDPM
-from src.visualizer import save_xyz_file
+from src.lightning import DDPM
 from src.utils import FoundNaNException, set_deterministic
 from tqdm import tqdm
 from src.molecule_builder import build_molecules
 from src import metrics
-from rdkit import Chem
 import time
+
 parser = argparse.ArgumentParser()
 parser.add_argument(
     '--pocket', action='store', type=str, required=False,
@@ -53,6 +51,33 @@ parser.add_argument(
     help='trajectory directory'
 )
 
+def save_xyz_file(path, one_hot, positions, node_mask, names, metadata=None, append=False):
+    idx2atom = const.IDX2ATOM
+
+    for batch_i in range(one_hot.size(0)):
+        mask = node_mask[batch_i].squeeze()
+        n_atoms = mask.sum()
+        atom_idx = torch.where(mask)[0]
+
+        if append:
+            f = open(os.path.join(path, f'{names[batch_i]}.xyz'), "a")
+        else:
+            f = open(os.path.join(path, f'{names[batch_i]}.xyz'), "w")
+
+        f.write("%d\n" % n_atoms)
+        if metadata is not None:
+            f.write("%s\n" % ','.join([f"{k}:{v}" for k, v in metadata.items()]))
+        else:
+            f.write("\n")
+        atoms = torch.argmax(one_hot[batch_i], dim=1)
+        for atom_i in atom_idx:
+            atom = atoms[atom_i].item()
+            atom = idx2atom[atom]
+            f.write("%s %.9f %.9f %.9f\n" % (
+                atom, positions[batch_i, atom_i, 0], positions[batch_i, atom_i, 1], positions[batch_i, atom_i, 2]
+            ))
+        f.close()
+
 def read_molecule(path):
     if path.endswith('.pdb'):
         return Chem.MolFromPDBFile(path, sanitize=False, removeHs=True)
@@ -69,7 +94,7 @@ def read_pocket(path):
     return struct.get_residues()
 
 def save_pdb_file(path, one_hot, positions, node_mask, names):
-    idx2atom = const.GEOM_IDX2ATOM
+    idx2atom = const.IDX2ATOM
     pdb_path = os.path.join(f'{path}.pdb')
     with open(pdb_path, 'w') as f:
         for batch_i in reversed(range(one_hot.size(0))):
@@ -115,7 +140,7 @@ def record_trajectories(directory, imol, chain_batch, node_mask):
         chain_output = os.path.join(directory, name)
         os.makedirs(chain_output, exist_ok=True)
 
-        one_hot = chain[:, :, 3+const.GEOM_NUMBER_OF_RESIDUE_TYPES:]
+        one_hot = chain[:, :, 3+const.N_RESIDUE_TYPES:]
         positions = chain[:, :, :3]
         chain_node_mask = torch.cat([node_mask[bi].unsqueeze(0) for _ in range(nframes)], dim=0)
         names = [f'{name}_{j:03d}' for j in range(nframes)]
@@ -130,7 +155,7 @@ def get_sssr_rings(mol):
 
 def prepare_single_dataset(pocket_path, device):
     positions = np.empty((0, 3), dtype=np.float32)
-    one_hot = np.empty((0, const.GEOM_NUMBER_OF_RESIDUE_TYPES + const.GEOM_NUMBER_OF_ATOM_TYPES), dtype=np.float32)
+    one_hot = np.empty((0, const.N_RESIDUE_TYPES + const.N_ATOM_TYPES), dtype=np.float32)
     pocket_size = 0
 
     if pocket_path is not None:
@@ -159,7 +184,7 @@ def prepare_single_dataset(pocket_path, device):
         'fragment_mask': torch.tensor(fragment_mask, dtype=const.TORCH_FLOAT, device=device),
         'linker_mask': torch.tensor(linker_mask, dtype=const.TORCH_FLOAT, device=device),
     }]
-    return MOADDataset(data=dataset, device=device)
+    return ProteinLigandDataset(data=dataset, device=device)
 
 def design_ligands(dataset, model, output_dir, n_samples, mol_size, random_seed, trajectory, device):
 
@@ -217,7 +242,7 @@ def design_ligands(dataset, model, output_dir, n_samples, mol_size, random_seed,
             node_mask[torch.where(data['fragment_mask'])] = 0
 
             x = chain[0][:, :, :ddpm.n_dims]
-            h = chain[0][:, :, ddpm.n_dims+const.GEOM_NUMBER_OF_RESIDUE_TYPES:]
+            h = chain[0][:, :, ddpm.n_dims+const.N_RESIDUE_TYPES:]
             
             mol = build_molecules(h, x, node_mask)[0]
             if not metrics.is_valid(mol):
@@ -273,7 +298,7 @@ if __name__ == '__main__':
         else:
             data_path = '.'
             prefix = args.dataset
-        dataset = MOADDataset(data_path=data_path, prefix=prefix, device=device)
+        dataset = ProteinLigandDataset(data_path=data_path, prefix=prefix, device=device)
     else:
         raise ValueError('Either --pocket or --dataset must be provided')
 

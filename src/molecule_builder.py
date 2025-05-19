@@ -2,9 +2,7 @@ import torch
 import numpy as np
 
 from rdkit import Chem, Geometry
-from rdkit.Chem import AllChem, rdMolDescriptors
-from src import const, mamba
-from rdkit.Chem import rdDetermineBonds
+from src import const
 
 def create_conformer(coords):
     conformer = Chem.Conformer()
@@ -26,7 +24,7 @@ def build_molecules(one_hot, x, node_mask, margins=const.MARGINS_EDM):
     return molecules
 
 def build_molecule(positions, atom_types, margins=const.MARGINS_EDM):
-    idx2atom = const.GEOM_IDX2ATOM
+    idx2atom = const.IDX2ATOM
     X, A, E = build_xae_molecule(positions, atom_types, margins=margins)
     # print(X, A, E)
     mol = Chem.RWMol()
@@ -41,9 +39,6 @@ def build_molecule(positions, atom_types, margins=const.MARGINS_EDM):
 
     mol.AddConformer(create_conformer(positions.detach().cpu().numpy().astype(np.float64)))
 
-    # mol = mamba.generate_predictions_from_mol(mol)
-    # rdDetermineBonds.DetermineBonds(mol)
-    # print('mol', mol, mol is None)
     return mol
 
 def build_xae_molecule(positions, atom_types, margins=const.MARGINS_EDM):
@@ -61,7 +56,7 @@ def build_xae_molecule(positions, atom_types, margins=const.MARGINS_EDM):
     A = torch.zeros((n, n), dtype=torch.bool)
     E = torch.zeros((n, n), dtype=torch.int)
 
-    idx2atom = const.GEOM_IDX2ATOM
+    idx2atom = const.IDX2ATOM
 
     pos = positions.unsqueeze(0)
     dists = torch.cdist(pos, pos, p=2).squeeze(0)

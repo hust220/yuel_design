@@ -1,14 +1,13 @@
 import argparse
 import os
-import pwd
 import sys
 import yaml
 
 from datetime import datetime
 from pytorch_lightning import Trainer, callbacks, loggers
 
-from src.const import GEOM_NUMBER_OF_ATOM_TYPES, GEOM_NUMBER_OF_RESIDUE_TYPES
-from src.lightning1 import DDPM
+from src.const import N_ATOM_TYPES, N_RESIDUE_TYPES
+from src.lightning import DDPM
 from src.utils import disable_rdkit_logging, set_deterministic, Logger
 
 def find_last_checkpoint(checkpoints_dir):
@@ -46,7 +45,7 @@ def main(args):
         entity=args.wandb_entity,
     )
 
-    in_node_nf = GEOM_NUMBER_OF_ATOM_TYPES + GEOM_NUMBER_OF_RESIDUE_TYPES
+    in_node_nf = N_ATOM_TYPES + N_RESIDUE_TYPES
     context_node_nf = 1
 
     ddpm = DDPM(

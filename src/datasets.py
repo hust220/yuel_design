@@ -1,6 +1,5 @@
 import os
 import numpy as np
-import pandas as pd
 import pickle
 import torch
 
@@ -9,7 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 from src import const
 from Bio.PDB import PDBParser
-from pdb import set_trace
 
 def parse_residues(rs):
     pocket_coords = []
@@ -40,23 +38,23 @@ def read_sdf(sdf_path):
 
 # one hot for atoms
 def atom_one_hot(atom):
-    n1 = const.GEOM_NUMBER_OF_RESIDUE_TYPES
-    n2 = const.GEOM_NUMBER_OF_ATOM_TYPES
+    n1 = const.N_RESIDUE_TYPES
+    n2 = const.N_ATOM_TYPES
     one_hot = np.zeros(n1 + n2)
-    one_hot[n1 + const.GEOM_ATOM2IDX[atom]] = 1
+    one_hot[n1 + const.ATOM2IDX[atom]] = 1
     return one_hot
 
 # one hot for amino acids
 def aa_one_hot(residue):
-    n1 = const.GEOM_NUMBER_OF_RESIDUE_TYPES
-    n2 = const.GEOM_NUMBER_OF_ATOM_TYPES
+    n1 = const.N_RESIDUE_TYPES
+    n2 = const.N_ATOM_TYPES
     one_hot = np.zeros(n1 + n2)
-    one_hot[const.GEOM_RESIDUE2IDX[residue]] = 1
+    one_hot[const.RESIDUE2IDX[residue]] = 1
     return one_hot
 
 def molecule_feat_mask():
-    n1 = const.GEOM_NUMBER_OF_RESIDUE_TYPES
-    n2 = const.GEOM_NUMBER_OF_ATOM_TYPES
+    n1 = const.N_RESIDUE_TYPES
+    n2 = const.N_ATOM_TYPES
     mask = np.zeros(n1 + n2)
     mask[n1:] = 1
     return mask
@@ -132,7 +130,7 @@ def pad_and_concatenate(tensor1, tensor2):
     # Concatenate along the first axis (stack vertically)
     return np.concatenate([tensor1_padded, tensor2_padded], axis=0)
 
-class MOADDataset(Dataset):
+class ProteinLigandDataset(Dataset):
     def __init__(self, data=None, data_path=None, prefix=None, device=None):
         assert (data is not None) or all(x is not None for x in (data_path, prefix, device))
         if data is not None:
@@ -188,7 +186,6 @@ class MOADDataset(Dataset):
             if len(positions) > 150:
                 print(f'Skipping molecule {molecule_name} with {len(positions)} atoms')
                 continue
-            # print(222,one_hot)
 
             protein_mask = np.zeros(pocket_size + mol_size)
             ligand_mask = np.zeros(pocket_size + mol_size)
@@ -225,14 +222,6 @@ def collate(batch):
     out['atom_mask'] = atom_mask[:, :, None]
 
     batch_size, n_nodes = atom_mask.size()
-
-    # In case of MOAD edge_mask is batch_idx
-    # 为什么MOAD的edge_mask是batch_idx呢？
-    # batch_mask = torch.cat([
-    #     torch.ones(n_nodes, dtype=const.TORCH_INT) * i
-    #     for i in range(batch_size)
-    # ]).to(atom_mask.device)
-    # out['edge_mask'] = batch_mask
 
     edge_mask = atom_mask[:, None, :] * atom_mask[:, :, None]
     diag_mask = ~torch.eye(edge_mask.size(1), dtype=const.TORCH_INT, device=atom_mask.device).unsqueeze(0)

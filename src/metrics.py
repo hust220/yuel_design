@@ -2,68 +2,6 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from scipy.stats import wasserstein_distance
 import math
-from rdkit.Chem import Descriptors, Lipinski, rdMolDescriptors
-
-def sas(mol):
-    """
-    Custom Synthetic Accessibility Score (SAS) implementation based on:
-    1. Molecular complexity (rings, branches, stereocenters)
-    2. Fragment contributions
-    3. Penalties for problematic groups
-    
-    Returns: Score between 1 (easy to make) and 10 (very hard)
-    """
-    if not mol or mol.GetNumAtoms() == 0:
-        return 10.0  # Worst score for invalid molecules
-    
-    # 1. Basic molecular properties
-    n_atoms = mol.GetNumAtoms()
-    n_rings = len(Chem.GetSymmSSSR(mol))
-    n_stereo = len(Chem.FindMolChiralCenters(mol, includeUnassigned=True))
-    n_rot_bonds = Lipinski.NumRotatableBonds(mol)
-    mw = Descriptors.MolWt(mol)
-    
-    # 2. Fragment-based complexity (modified Ertl's method)
-    fragment_score = 0
-    frags = Chem.GetMolFrags(mol, asMols=True)
-    for frag in frags:
-        frag_size = frag.GetNumAtoms()
-        if frag_size <= 2:
-            fragment_score += 1
-        elif frag_size <= 5:
-            fragment_score += 2
-        else:
-            fragment_score += 3 + math.log(frag_size - 4, 2)
-    
-    # 3. Problematic groups penalty
-    penalty = 0
-    problematic_smarts = [
-        '[#16;D2](=[#8])(=[#8])',  # Sulfones
-        '[#7;!R]=[#8;!R]',         # Nitro groups
-        '[#6](=[#8])[#6](=[#8])',  # 1,2-dicarbonyl
-        '[#7;R]=[#8]',             # Cyclic amides
-        '[#6]#[#6]',               # Alkynes
-        '[#16]',                   # Sulfur atoms
-        '[#15]',                   # Phosphorus atoms
-    ]
-    
-    for smarts in problematic_smarts:
-        penalty += len(mol.GetSubstructMatches(Chem.MolFromSmarts(smarts)))
-    
-    # 4. Calculate raw score (lower = easier)
-    raw_score = (
-        0.5 * n_rings + 
-        0.5 * n_stereo + 
-        0.3 * n_rot_bonds + 
-        0.1 * fragment_score + 
-        0.8 * penalty +
-        math.log(mw / 100, 2)
-    )
-    
-    # 5. Normalize to 1-10 scale (empirically determined)
-    sas = min(10.0, max(1.0, 1.0 + (raw_score / 2.5)))
-    
-    return round(sas, 2)
 
 def safe_exp(x):
     """Numerically stable exponential function with clipping"""
@@ -87,49 +25,6 @@ def sigmoid_transform(x, a, b, c, d):
         term2 = 0.0 if x > c else 1.0
     
     return term1 * term2
-
-def qed(mol):
-    """Fixed version with stable numerical transforms"""
-    if not mol:
-        return 0.0
-    
-    # Adjusted parameters for real-world ranges
-    sig_params = {
-        'MW': [100, 50, 400, 50],      # MW typically 0-500 Da
-        'ALOGP': [-1, 1, 5, 1],        # LogP typically -2 to 6
-        'HBA': [0, 1, 8, 1],            # HBA typically 0-10
-        'HBD': [0, 1, 5, 1],            # HBD typically 0-5
-        'PSA': [0, 10, 150, 10],        # PSA typically 0-200 Å²
-        'ROTB': [0, 1, 8, 1],           # Rotatable bonds typically 0-10
-        'AROM': [0, 1, 4, 1],           # Aromatic rings typically 0-5
-        'ALERTS': [0, 0.1, 1, 0.1],     # Binary-like (0-1)
-    }
-    
-    # Calculate descriptors (same as before)
-    descriptors = {
-        'MW': Descriptors.MolWt(mol),
-        'ALOGP': Descriptors.MolLogP(mol),
-        'HBA': Lipinski.NumHAcceptors(mol),
-        'HBD': Lipinski.NumHDonors(mol),
-        'PSA': rdMolDescriptors.CalcTPSA(mol),
-        'ROTB': Lipinski.NumRotatableBonds(mol),
-        'AROM': Lipinski.NumAromaticRings(mol),
-        'ALERTS': 0,
-    }
-    
-    # Apply stable transformation
-    transformed = {}
-    for key, value in descriptors.items():
-        a, b, c, d = sig_params[key]
-        transformed[key] = sigmoid_transform(value, a, b, c, d)
-    
-    # Geometric mean
-    product = 1.0
-    for t in transformed.values():
-        product *= max(0.001, t)  # Prevent zeros
-    
-    return product ** (1/len(transformed))
-
 
 def is_valid(mol):
     try:

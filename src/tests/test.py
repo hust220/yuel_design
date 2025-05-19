@@ -16,11 +16,11 @@ sys.path.append(str(project_root))
 
 import src
 from src.molecule_builder import build_molecule, build_molecules
-from src.datasets1 import parse_molecule, get_pocket, MOADDataset, get_dataloader, collate
-from src.metrics import is_valid, qed, sas
+from src.datasets import parse_molecule, get_pocket, ProteinLigandDataset, get_dataloader, collate
+from src.metrics import is_valid
 from src import const
 
-# write a function to convert smiles to one_hot and positions based on the function parse_molecule in datasets1
+# write a function to convert smiles to one_hot and positions based on the function parse_molecule in datasets
 def rebuild_molecule(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -33,14 +33,14 @@ def rebuild_molecule(smiles):
     pos, one_hot = parse_molecule(mol)
     pos = torch.tensor(pos)
     one_hot = torch.tensor(one_hot)
-    one_hot = one_hot[:,const.GEOM_NUMBER_OF_RESIDUE_TYPES:]
+    one_hot = one_hot[:,const.N_RESIDUE_TYPES:]
     atom_types = one_hot.argmax(dim=1)
     molecule = build_molecule(pos, atom_types)
     return molecule
 
 def test_build_molecules():
     print(os.path.join(project_root, 'datasets'))
-    ds = MOADDataset(
+    ds = ProteinLigandDataset(
         data_path=os.path.join(project_root, 'datasets'),
         prefix='MOAD_val',
         device='cpu'
@@ -50,7 +50,7 @@ def test_build_molecules():
     )
     for data in dataloader:
         molecules = build_molecules(
-            data['one_hot'][:, :, const.GEOM_NUMBER_OF_RESIDUE_TYPES:],
+            data['one_hot'][:, :, const.N_RESIDUE_TYPES:],
             data['positions'],
             data['ligand_mask'],
         )
@@ -67,12 +67,6 @@ def test_build_molecules():
             img = Draw.MolToImage(molecule)
             img.save(f"tests/molecule_2_{name}.png")
             assert is_valid(molecule), "The molecule should be valid."
-
-            q = qed(molecule)
-            s = sas(molecule)
-            print(q, s)
-            assert q, "QED"
-            assert s, "SAS"
 
 
     assert is_valid(rebuild_molecule("C1CCCCC1C2CCCCC2")), "The molecule should be valid."

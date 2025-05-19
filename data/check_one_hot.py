@@ -9,8 +9,8 @@ from src import const
 with open(sys.argv[1], 'rb') as f:
     data = pickle.load(f)  # List of dictionaries
 
-n1 = const.GEOM_NUMBER_OF_RESIDUE_TYPES
-n2 = const.GEOM_NUMBER_OF_ATOM_TYPES
+n1 = const.N_RESIDUE_TYPES
+n2 = const.N_ATOM_TYPES
 n = n1 + n2
 
 # 2. Process each entry with progress bar

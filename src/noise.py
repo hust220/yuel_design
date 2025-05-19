@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import math
 import numpy as np
 
-
 def clip_noise_schedule(alphas2, clip_value=0.001):
     """
     For a noise schedule given by alpha^2, this clips alpha_t / alpha_t-1. This may help improve stability during

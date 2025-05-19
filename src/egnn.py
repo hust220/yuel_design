@@ -4,8 +4,6 @@ import torch
 import torch.nn as nn
 
 from src import utils
-from pdb import set_trace
-
 
 class GCL(nn.Module):
     def __init__(self, input_nf, output_nf, hidden_nf, normalization_factor, aggregation_method, activation,

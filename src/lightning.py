@@ -1,14 +1,13 @@
 import numpy as np
-import os
 import pytorch_lightning as pl
 import torch
 
 from src import metrics, utils
-from src.const import GEOM_NUMBER_OF_RESIDUE_TYPES
+from src.const import N_RESIDUE_TYPES
 from src.egnn import Dynamics
 from src.edm import EDM
-from src.datasets1 import (
-    MOADDataset, create_templates_for_generation, get_dataloader, collate, molecule_feat_mask
+from src.datasets import (
+    ProteinLigandDataset, create_templates_for_generation, get_dataloader, collate, molecule_feat_mask
 )
 from src.molecule_builder import build_molecules
 from typing import Dict, List, Optional
@@ -98,7 +97,7 @@ class DDPM(pl.LightningModule):
         )
 
     def setup(self, stage: Optional[str] = None):
-        dataset_type = MOADDataset
+        dataset_type = ProteinLigandDataset
         if stage == 'fit':
             self.train_dataset = dataset_type(
                 data_path=self.data_path,
@@ -285,11 +284,10 @@ class DDPM(pl.LightningModule):
         bar = tqdm(total=len(dataloader) * self.n_stability_samples, desc='Sampling')
         for b, data in enumerate(dataloader):
             true_molecules_batch = build_molecules(
-                data['one_hot'][:, :, GEOM_NUMBER_OF_RESIDUE_TYPES:],
+                data['one_hot'][:, :, N_RESIDUE_TYPES:],
                 data['positions'],
                 data['ligand_mask'],
             )
-            # print(data['one_hot'][0,:,GEOM_NUMBER_OF_RESIDUE_TYPES:])
 
             for _ in range(self.n_stability_samples):
                 try:
@@ -313,7 +311,7 @@ class DDPM(pl.LightningModule):
                     num_classes=self.num_classes,
                 )
 
-                one_hot = h['categorical'][:, :, GEOM_NUMBER_OF_RESIDUE_TYPES:]
+                one_hot = h['categorical'][:, :, N_RESIDUE_TYPES:]
                 node_mask = data['ligand_mask']
                 pred_molecules_batch = build_molecules(one_hot, x, node_mask)
 
