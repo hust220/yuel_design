@@ -44,24 +44,30 @@ python yuel_design.py \
     --n_samples 50
 ```
 
-Parameters:
+### Required Parameters
 
-Required:
-- `--model`: Path to the DiffLinker model
-- `--size`: Linker size, can be:
-    - A single integer
-    - Comma-separated integer range
-    - Path to a size prediction model
+`--model`: Path to the DiffLinker model
 
-Input Source (choose one):
-- `--pocket`: Path to the file containing pocket atoms
-- `--dataset`: Path to the dataset
+`--size`: Linker size, can be:
+* A single integer
+* Comma-separated integer range
+* Path to a size prediction model
 
-Optional:
-- `--output`: Directory to save generated molecules (default: './')
-- `--n_samples`: Number of linkers to generate (default: 5)
-- `--random_seed`: Random seed (default: None)
-- `--trajectory`: Trajectory directory (default: None)
+### Input Source (choose one)
+
+`--pocket`: Path to the file containing pocket atoms
+
+`--dataset`: Path to the dataset
+
+### Optional Parameters
+
+`--output`: Directory to save generated molecules (default: './')
+
+`--n_samples`: Number of linkers to generate (default: 5)
+
+`--random_seed`: Random seed (default: None)
+
+`--trajectory`: Trajectory directory (default: None)
 
 ## Training
 
