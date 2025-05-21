@@ -245,6 +245,62 @@ def load_metrics(filename):
     with open(f'analysis/{filename}.pkl', 'rb') as f:
         return pickle.load(f)
 
+def save_metrics_to_csv(metrics, output_dir='analysis/metrics_csv'):
+    """
+    Save metrics to CSV files with proper organization and metadata.
+    
+    Args:
+        metrics (dict): Dictionary containing metrics data
+        output_dir (str): Directory to save CSV files
+    """
+    import os
+    import pandas as pd
+    from datetime import datetime
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get current timestamp for file naming
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Process each metric type
+    for metric_name, metric_data in metrics.items():
+        # Create a list to store all rows
+        rows = []
+        
+        # Process data for each target and size
+        for target, size_data in metric_data.items():
+            for size, values in size_data.items():
+                for value in values:
+                    rows.append({
+                        'target': target,
+                        'size': size,
+                        'value': value,
+                        'metric_type': metric_name
+                    })
+        
+        # Create DataFrame
+        df = pd.DataFrame(rows)
+        
+        # Save to CSV
+        output_file = os.path.join(output_dir, f'{metric_name}_{timestamp}.csv')
+        df.to_csv(output_file, index=False)
+        print(f'Saved {metric_name} metrics to {output_file}')
+        
+        # Also save a summary statistics file
+        summary_df = df.groupby(['target', 'size'])['value'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
+        summary_file = os.path.join(output_dir, f'{metric_name}_summary_{timestamp}.csv')
+        summary_df.to_csv(summary_file, index=False)
+        print(f'Saved {metric_name} summary statistics to {summary_file}')
+
+# Example usage:
+# save_metrics_to_csv({
+#     'validity': validity_metrics,
+#     'qed': qed_metrics,
+#     'sas': sas_metrics,
+#     'lipinski': lipinski_metrics
+# })
+
 #%%
 folder_path = "test_results/MOAD_test"
 # qeds = calculate_metrics(folder_path, callback=calculate_qed)

@@ -3,7 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import AllChem, Lipinski, Descriptors, QED
 import sys
 import os
-sys.path.append('../')
+sys.path.append('../..')
 from db_utils import db_connection
 from tqdm import tqdm
 import networkx as nx
@@ -15,6 +15,7 @@ import seaborn as sns
 import numpy as np
 import pickle
 import matplotlib.colors as mcolors
+from datetime import datetime
 
 # Disable RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -72,10 +73,10 @@ def has_large_rings(mol):
     except:
         return None
 
-def add_metrics_columns(cursor):
+def add_metrics_columns(cursor, table_name):
     """Add metric columns to the diffsbdd_generation table if they don't exist."""
-    cursor.execute("""
-        ALTER TABLE diffsbdd_generation 
+    cursor.execute(f"""
+        ALTER TABLE {table_name} 
         ADD COLUMN IF NOT EXISTS validity BOOLEAN,
         ADD COLUMN IF NOT EXISTS connectivity BOOLEAN,
         ADD COLUMN IF NOT EXISTS large_ring_rate BOOLEAN,
@@ -84,23 +85,23 @@ def add_metrics_columns(cursor):
         ADD COLUMN IF NOT EXISTS lipinski BOOLEAN
     """)
 
-def analyze_molecules(batch_size=20):
+def analyze_generated_molecules(batch_size=20, table_name='diffsbdd_generation', sdf_column='sdf'):
     with db_connection() as conn:
         cursor = conn.cursor()
         
         # Add metric columns if they don't exist
-        add_metrics_columns(cursor)
+        add_metrics_columns(cursor, table_name)
         
         # Get total count of molecules
-        cursor.execute("SELECT COUNT(*) FROM diffsbdd_generation")
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
         total_molecules = cursor.fetchone()[0]
         
         # Process in batches
         for offset in tqdm(range(0, total_molecules, batch_size), desc="Processing batches"):
             # Get batch of molecules
-            cursor.execute("""
-                SELECT id, sdf 
-                FROM diffsbdd_generation 
+            cursor.execute(f"""
+                SELECT id, {sdf_column} 
+                FROM {table_name} 
                 ORDER BY id 
                 LIMIT %s OFFSET %s
             """, (batch_size, offset))
@@ -123,8 +124,8 @@ def analyze_molecules(batch_size=20):
                 lipinski = calculate_lipinski(mol) if validity else None
                 
                 # Update database with metrics
-                cursor.execute("""
-                    UPDATE diffsbdd_generation 
+                cursor.execute(f"""
+                    UPDATE {table_name} 
                     SET validity = %s,
                         connectivity = %s,
                         large_ring_rate = %s,
@@ -137,13 +138,13 @@ def analyze_molecules(batch_size=20):
             # Commit after each batch
             conn.commit()
 
-def get_metrics_from_db():
+def get_metrics_from_db(table_name='diffsbdd_generation', name_column='molecule_name'):
     """Get all metrics from the database and organize them by target."""
     with db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT molecule_name, validity, connectivity, large_ring_rate, qed, sas, lipinski 
-            FROM diffsbdd_generation
+        cursor.execute(f"""
+            SELECT {name_column}, size, validity, connectivity, large_ring_rate, qed, sas, lipinski 
+            FROM {table_name}
         """)
         rows = cursor.fetchall()
         
@@ -155,25 +156,25 @@ def get_metrics_from_db():
             'sas': {},
             'lipinski': {}
         }
-        
+
         for row in rows:
-            molecule_name, validity, connectivity, large_ring_rate, qed, sas, lipinski = row
+            molecule_name, size, validity, connectivity, large_ring_rate, qed, sas, lipinski = row
             # Extract target name from molecule_name (assuming format like "target_name_*")
             target = molecule_name.split('_')[0]
             
             # Add metrics to respective dictionaries
             if validity is not None:
-                metrics['validity'].setdefault(target, []).append(validity)
+                metrics['validity'].setdefault((target, size), []).append(validity)
             if connectivity is not None:
-                metrics['connectivity'].setdefault(target, []).append(connectivity)
+                metrics['connectivity'].setdefault((target, size), []).append(connectivity)
             if large_ring_rate is not None:
-                metrics['large_ring_rate'].setdefault(target, []).append(min(1, large_ring_rate+0.1))
+                metrics['large_ring_rate'].setdefault((target, size), []).append(min(1, large_ring_rate))
             if qed is not None:
-                metrics['qed'].setdefault(target, []).append(max(0, qed-0.1))
+                metrics['qed'].setdefault((target, size), []).append(max(0, qed))
             if sas is not None:
-                metrics['sas'].setdefault(target, []).append(min(10, sas+1))
+                metrics['sas'].setdefault((target, size), []).append(min(10, sas))
             if lipinski is not None:
-                metrics['lipinski'].setdefault(target, []).append(max(0, lipinski-0.1))
+                metrics['lipinski'].setdefault((target, size), []).append(max(0, lipinski))
         
         return metrics
 
@@ -199,27 +200,32 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     
     # Prepare data for plotting
     data = []
-    palette = {'YuelDesign': '#8e7fbb', 'DiffSBDD': '#a2c9ae', 'Original': '#888888'}
+    palette = {'YuelDesign': '#8e7fbb', 'DiffSBDD': '#a2c9ae', 'Original': '#aaaaaa'}
     
     # YuelDesign
     yuel_values = []
     if yuel_metrics is not None:
         yuel_metrics_by_target = {}
-        for pdb_id, m1 in yuel_metrics.items():
-            for size, metric in m1.items():
-                yuel_metrics_by_target.setdefault(pdb_id, []).extend(metric)
+        for (pdb_id, size), m1 in yuel_metrics.items():
+            for metric in m1:
+                if size >= 10 and size <= 20:
+                    yuel_metrics_by_target.setdefault(pdb_id, []).append(metric)
         yuel_values = [val for sublist in yuel_metrics_by_target.values() for val in sublist]
         df_yuel = pd.DataFrame({'value': yuel_values, 'group': 'YuelDesign'})
         data.append(df_yuel)
     
     # Only show DiffSBDD if not validity or connectivity
     show_diffsbdd = metric_name.lower() not in ['validity', 'connectivity']
+    # offsets = {'qed': -0.1}
+    # offset = offsets.get(metric_name, 0)
+    offset = 0
     diffsbdd_values = []
     if show_diffsbdd:
         diffsbdd_metrics_by_target = {}
-        for pdb_id, m1 in diffsbdd_metrics.items():
+        for (pdb_id, size), m1 in diffsbdd_metrics.items():
             for metric in m1:
-                diffsbdd_metrics_by_target.setdefault(pdb_id, []).append(metric)
+                if size >= 10 and size <= 20:
+                    diffsbdd_metrics_by_target.setdefault(pdb_id, []).append(metric+offset)
         diffsbdd_values = [val for sublist in diffsbdd_metrics_by_target.values() for val in sublist]
         df_diffsbdd = pd.DataFrame({'value': diffsbdd_values, 'group': 'DiffSBDD'})
         data.append(df_diffsbdd)
@@ -228,9 +234,10 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     original_values = []
     if original_metrics is not None:
         original_metrics_by_target = {}
-        for pdb_id, m1 in original_metrics.items():
-            for size, metric in m1.items():
-                original_metrics_by_target.setdefault(pdb_id, []).extend(metric)
+        for (pdb_id, size), m1 in original_metrics.items():
+            for metric in m1:
+                if size >= 10 and size <= 20:
+                    original_metrics_by_target.setdefault(pdb_id, []).append(metric)
         original_values = [val for sublist in original_metrics_by_target.values() for val in sublist]
         df_original = pd.DataFrame({'value': original_values, 'group': 'Original'})
         data.append(df_original)
@@ -241,12 +248,12 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     metric_name_lower = metric_name.lower()
     if metric_name_lower in ['qed', 'sas']:
         # KDE plot for QED, SAS
-        if yuel_values:
-            sns.kdeplot(yuel_values, color=palette['YuelDesign'], fill=True, alpha=0.6, linewidth=2)
-        if show_diffsbdd and diffsbdd_values:
-            sns.kdeplot(diffsbdd_values, color=palette['DiffSBDD'], fill=True, alpha=0.6, linewidth=2)
         if original_values:
             sns.kdeplot(original_values, color=palette['Original'], fill=True, alpha=0.6, linewidth=2)
+        if show_diffsbdd and diffsbdd_values:
+            sns.kdeplot(diffsbdd_values, color=palette['DiffSBDD'], fill=True, alpha=0.6, linewidth=2)
+        if yuel_values:
+            sns.kdeplot(yuel_values, color=palette['YuelDesign'], fill=True, alpha=0.6, linewidth=2)
         plt.xlabel('SAS' if metric_name_lower == 'sas' else metric_name)
         if metric_name_lower == 'qed':
             plt.xlabel('QED')
@@ -388,9 +395,9 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
     metrics_by_size1 = {}  # DiffSBDD
     metrics_by_size3 = {}  # Original
     if yuel_metrics is not None:
-        for pdb_id, metrics in yuel_metrics.items():
-            for size, metric in metrics.items():
-                metrics_by_size2.setdefault(size, []).extend(metric)
+        for (_, size), metrics in yuel_metrics.items():
+            for metric in metrics:
+                metrics_by_size2.setdefault(size, []).append(metric)
         x2 = sorted(list(metrics_by_size2.keys()))
         y2 = [np.mean(metrics_by_size2[size]) for size in x2]
         yerr2 = [np.std(metrics_by_size2[size]) / np.sqrt(len(metrics_by_size2[size])) for size in x2]
@@ -398,9 +405,8 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
         plt.fill_between(x2, min(y2), y2, color=palette['YuelDesign'], alpha=0.2)
     show_diffsbdd = metric_name.lower() not in ['validity', 'connectivity']
     if show_diffsbdd and diffsbdd_metrics is not None:
-        for pdb_id, metrics in diffsbdd_metrics.items():
+        for (_, size), metrics in diffsbdd_metrics.items():
             for metric in metrics:
-                size = len(metrics)
                 metrics_by_size1.setdefault(size, []).append(metric)
         x1 = sorted(list(metrics_by_size1.keys()))
         y1 = [np.mean(metrics_by_size1[size]) for size in x1]
@@ -408,9 +414,9 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
         plt.plot(x1, y1, color=palette['DiffSBDD'], linewidth=1.5, label='DiffSBDD')
         plt.fill_between(x1, min(y1), y1, color=palette['DiffSBDD'], alpha=0.2)
     if original_metrics is not None:
-        for pdb_id, metrics in original_metrics.items():
-            for size, metric in metrics.items():
-                metrics_by_size3.setdefault(size, []).extend(metric)
+        for (_, size), metrics in original_metrics.items():
+            for metric in metrics:
+                metrics_by_size3.setdefault(size, []).append(metric)
         x3 = sorted(list(metrics_by_size3.keys()))
         y3 = [np.mean(metrics_by_size3[size]) for size in x3]
         yerr3 = [np.std(metrics_by_size3[size]) / np.sqrt(len(metrics_by_size3[size])) for size in x3]
@@ -477,33 +483,129 @@ def plot_all_metrics(diffsbdd_metrics, yuel_metrics=None, original_metrics=None)
             # diffsbdd_metrics[metric]
         )
 
-if __name__ == "__main__":
-    # First analyze molecules
-    # analyze_molecules()
+def save_metrics_to_csv(metrics_dict, output_dir='analysis/metrics_csv'):
+    """
+    Save metrics from different sources to CSV files with proper organization and metadata.
     
-    # Then get metrics and plot them
-    diffsbdd_metrics = get_metrics_from_db()
+    Args:
+        metrics_dict (dict): Dictionary containing metrics data from different sources
+            Format: {'source_name': {'metric_name': {target: {size: [values]}}}}
+        output_dir (str): Directory to save CSV files
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
     
-    # Load YuelDesign and Original metrics if available
-    try:
-        yuel_metrics = {
-            'validity': load_metrics('validity'),
-            'connectivity': load_metrics('connectivity'),
-            'large_ring_rate': load_metrics('large_ring_rate'),
-            'qed': load_metrics('qeds'),
-            'sas': load_metrics('sas'),
-            'lipinski': load_metrics('lipinski')
-        }
+    # Get current timestamp for file naming
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Process each source
+    for source_name, source_metrics in metrics_dict.items():
+        # Process each metric type
+        for metric_name, metric_data in source_metrics.items():
+            # Create a list to store all rows
+            rows = []
+            
+            # Process data for each target and size
+            for target, size_data in metric_data.items():
+                for size, values in size_data.items():
+                    for value in values:
+                        rows.append({
+                            'source': source_name,
+                            'target': target,
+                            'size': size,
+                            'value': value,
+                            'metric_type': metric_name
+                        })
+            
+            # Create DataFrame
+            df = pd.DataFrame(rows)
+            
+            # Save to CSV
+            output_file = os.path.join(output_dir, f'{source_name}_{metric_name}_{timestamp}.csv')
+            df.to_csv(output_file, index=False)
+            print(f'Saved {source_name} {metric_name} metrics to {output_file}')
+            
+            # Also save a summary statistics file
+            summary_df = df.groupby(['source', 'target', 'size'])['value'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
+            summary_file = os.path.join(output_dir, f'{source_name}_{metric_name}_summary_{timestamp}.csv')
+            summary_df.to_csv(summary_file, index=False)
+            print(f'Saved {source_name} {metric_name} summary statistics to {summary_file}')
+
+def create_metrics_comparison_table(metrics_dict, output_file='metrics_comparison.csv'):
+    """
+    Create a comparison table of metrics across different sizes and methods.
+    
+    Args:
+        metrics_dict (dict): Dictionary containing metrics data from different sources
+            Format: {'source_name': {'metric_name': {target: {size: [values]}}}}
+        output_dir (str): Directory to save the comparison table
+    """
+    # Initialize list to store all rows
+    all_rows = []
+    
+    # Process each source
+    for source_name, source_metrics in metrics_dict.items():
+        # Process each metric type
+        for metric_name, metric_data in source_metrics.items():
+            # Process data for each target and size
+            for target, size_data in metric_data.items():
+                for size, values in size_data.items():
+                    if 10 <= size <= 30:  # Only include sizes from 10 to 30
+                        mean_value = np.mean(values)
+                        std_value = np.std(values)
+                        all_rows.append({
+                            'Method': source_name,
+                            'Metric': metric_name,
+                            'Size': size,
+                            'Mean': mean_value,
+                            'Std': std_value
+                        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(all_rows)
+    
+    # Create pivot table for better readability
+    pivot_df = df.pivot_table(
+        index=['Method', 'Metric'],
+        columns='Size',
+        values=['Mean', 'Std'],
+        aggfunc='first'
+    )
+    
+    # Flatten column names
+    pivot_df.columns = [f'{col[0]}_{col[1]}' for col in pivot_df.columns]
+    
+    # Save to CSV
+    pivot_df.to_csv(output_file)
+    print(f'Saved metrics comparison table to {output_file}')
         
-        original_metrics = {
-            'qed': load_metrics('original_qed'),
-            'sas': load_metrics('original_sas'),
-            'lipinski': load_metrics('original_lipinski')
-        }
-        
-        plot_all_metrics(diffsbdd_metrics, yuel_metrics, original_metrics)
-    except Exception as e:
-        # If YuelDesign or Original metrics are not available, just plot DiffSBDD metrics
-        # plot_all_metrics(diffsbdd_metrics)
-        raise e
+    return pivot_df
+
+#%%
+diffsbdd_table = 'diffsbdd_generation'
+yueldesign_table = 'molecules'
+native_table = 'ligands'
+#%%
+# analyze_generated_molecules(table_name=diffsbdd_table, sdf_column='sdf')
+# analyze_generated_molecules(table_name=yueldesign_table, sdf_column='sdf2')
+analyze_generated_molecules(table_name=native_table, sdf_column='mol')
+
+#%%
+diffsbdd_metrics = get_metrics_from_db(table_name=diffsbdd_table, name_column='molecule_name')
+yueldesign_metrics = get_metrics_from_db(table_name=yueldesign_table, name_column='ligand_name')
+native_metrics = get_metrics_from_db(table_name=native_table, name_column='name')
+plot_all_metrics(diffsbdd_metrics, yueldesign_metrics, native_metrics)
+
+#%%
+# Create comparison table
+metrics_dict = {
+    'DiffSBDD': diffsbdd_metrics,
+    'YuelDesign': yueldesign_metrics,
+    'Native Ligands': native_metrics
+}
+comparison_table = create_metrics_comparison_table(metrics_dict)
+print("\nMetrics Comparison Table:")
+print(comparison_table)
+
+
 # %%
