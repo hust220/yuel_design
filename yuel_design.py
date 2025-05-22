@@ -28,11 +28,11 @@ parser.add_argument(
 )
 parser.add_argument(
     '--model', action='store', type=str, required=True,
-    help='Path to the DiffLinker model'
+    help='Path to the YuelDesign model'
 )
 parser.add_argument(
     '--size', action='store', type=str, required=True,
-    help='Linker size (int) or allowed size boundaries (comma-separated integers) or path to the size prediction model'
+    help='Compound size (int) or allowed size boundaries (comma-separated integers) or path to the size prediction model'
 )
 parser.add_argument(
     '--output', action='store', type=str, required=False, default='./',
@@ -40,7 +40,7 @@ parser.add_argument(
 )
 parser.add_argument(
     '--n_samples', action='store', type=int, required=False, default=5,
-    help='Number of linkers to generate'
+    help='Number of compounds to generate'
 )
 parser.add_argument(
     '--random_seed', action='store', type=int, required=False, default=None,
@@ -174,15 +174,15 @@ def prepare_single_dataset(pocket_path, device):
         positions = pocket_pos
         one_hot = pocket_one_hot
 
-    linker_mask = np.zeros(pocket_size)
-    fragment_mask = np.ones(pocket_size)
+    ligand_mask = np.zeros(pocket_size)
+    protein_mask = np.ones(pocket_size)
 
     dataset = [{
         'name': '0',
         'positions': torch.tensor(positions, dtype=const.TORCH_FLOAT, device=device),
         'one_hot': torch.tensor(one_hot, dtype=const.TORCH_FLOAT, device=device),
-        'fragment_mask': torch.tensor(fragment_mask, dtype=const.TORCH_FLOAT, device=device),
-        'linker_mask': torch.tensor(linker_mask, dtype=const.TORCH_FLOAT, device=device),
+        'protein_mask': torch.tensor(protein_mask, dtype=const.TORCH_FLOAT, device=device),
+        'ligand_mask': torch.tensor(ligand_mask, dtype=const.TORCH_FLOAT, device=device),
     }]
     return ProteinLigandDataset(data=dataset, device=device)
 
@@ -239,7 +239,7 @@ def design_ligands(dataset, model, output_dir, n_samples, mol_size, random_seed,
             except FoundNaNException:
                 continue
             
-            node_mask[torch.where(data['fragment_mask'])] = 0
+            node_mask[torch.where(data['protein_mask'])] = 0
 
             x = chain[0][:, :, :ddpm.n_dims]
             h = chain[0][:, :, ddpm.n_dims+const.N_RESIDUE_TYPES:]

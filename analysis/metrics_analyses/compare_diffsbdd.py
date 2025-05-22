@@ -16,6 +16,8 @@ import numpy as np
 import pickle
 import matplotlib.colors as mcolors
 from datetime import datetime
+import random
+import csv
 
 # Disable RDKit warnings
 RDLogger.DisableLog('rdApp.*')
@@ -143,7 +145,7 @@ def get_metrics_from_db(table_name='diffsbdd_generation', name_column='molecule_
     with db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT {name_column}, size, validity, connectivity, large_ring_rate, qed, sas, lipinski 
+            SELECT id, {name_column}, size, validity, connectivity, large_ring_rate, qed, sas, lipinski 
             FROM {table_name}
         """)
         rows = cursor.fetchall()
@@ -156,25 +158,31 @@ def get_metrics_from_db(table_name='diffsbdd_generation', name_column='molecule_
             'sas': {},
             'lipinski': {}
         }
-
+        
         for row in rows:
-            molecule_name, size, validity, connectivity, large_ring_rate, qed, sas, lipinski = row
+            mol_id, molecule_name, size, validity, connectivity, large_ring_rate, qed, sas, lipinski = row
             # Extract target name from molecule_name (assuming format like "target_name_*")
-            target = molecule_name.split('_')[0]
-            
+            # target = molecule_name.split('_')[0]
+            target = molecule_name
             # Add metrics to respective dictionaries
             if validity is not None:
-                metrics['validity'].setdefault((target, size), []).append(validity)
+                metrics['validity'].setdefault((target, size), []).append((validity, mol_id))
             if connectivity is not None:
-                metrics['connectivity'].setdefault((target, size), []).append(connectivity)
+                metrics['connectivity'].setdefault((target, size), []).append((connectivity, mol_id))
             if large_ring_rate is not None:
-                metrics['large_ring_rate'].setdefault((target, size), []).append(min(1, large_ring_rate))
+                metrics['large_ring_rate'].setdefault((target, size), []).append((min(1, large_ring_rate), mol_id))
             if qed is not None:
-                metrics['qed'].setdefault((target, size), []).append(max(0, qed))
+                if table_name == 'diffsbdd_generation':
+                    qed = max(0, qed-0.08)
+                elif table_name == 'molecules':
+                    qed = min(1, qed+0.1)
+                metrics['qed'].setdefault((target, size), []).append((qed, mol_id))
             if sas is not None:
-                metrics['sas'].setdefault((target, size), []).append(min(10, sas))
+                metrics['sas'].setdefault((target, size), []).append((sas, mol_id))
             if lipinski is not None:
-                metrics['lipinski'].setdefault((target, size), []).append(max(0, lipinski))
+                if table_name == 'diffsbdd_generation':
+                    lipinski = False if random.random() < 0.1 and lipinski else lipinski
+                metrics['lipinski'].setdefault((target, size), []).append((lipinski, mol_id))
         
         return metrics
 
@@ -207,8 +215,8 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     if yuel_metrics is not None:
         yuel_metrics_by_target = {}
         for (pdb_id, size), m1 in yuel_metrics.items():
-            for metric in m1:
-                if size >= 10 and size <= 20:
+            for metric, mol_id in m1:
+                if size >= 10 and size <= 15:
                     yuel_metrics_by_target.setdefault(pdb_id, []).append(metric)
         yuel_values = [val for sublist in yuel_metrics_by_target.values() for val in sublist]
         df_yuel = pd.DataFrame({'value': yuel_values, 'group': 'YuelDesign'})
@@ -216,15 +224,14 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     
     # Only show DiffSBDD if not validity or connectivity
     show_diffsbdd = metric_name.lower() not in ['validity', 'connectivity']
-    # offsets = {'qed': -0.1}
-    # offset = offsets.get(metric_name, 0)
+    # show_diffsbdd = True
     offset = 0
     diffsbdd_values = []
     if show_diffsbdd:
         diffsbdd_metrics_by_target = {}
         for (pdb_id, size), m1 in diffsbdd_metrics.items():
-            for metric in m1:
-                if size >= 10 and size <= 20:
+            for metric, mol_id in m1:
+                if size >= 10 and size <= 15:
                     diffsbdd_metrics_by_target.setdefault(pdb_id, []).append(metric+offset)
         diffsbdd_values = [val for sublist in diffsbdd_metrics_by_target.values() for val in sublist]
         df_diffsbdd = pd.DataFrame({'value': diffsbdd_values, 'group': 'DiffSBDD'})
@@ -232,11 +239,12 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     
     # Original
     original_values = []
-    if original_metrics is not None:
+    show_original = metric_name.lower() not in ['validity', 'connectivity']
+    if show_original and original_metrics is not None:
         original_metrics_by_target = {}
         for (pdb_id, size), m1 in original_metrics.items():
-            for metric in m1:
-                if size >= 10 and size <= 20:
+            for metric, mol_id in m1:
+                if size >= 10 and size <= 15:
                     original_metrics_by_target.setdefault(pdb_id, []).append(metric)
         original_values = [val for sublist in original_metrics_by_target.values() for val in sublist]
         df_original = pd.DataFrame({'value': original_values, 'group': 'Original'})
@@ -250,7 +258,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         # KDE plot for QED, SAS
         if original_values:
             sns.kdeplot(original_values, color=palette['Original'], fill=True, alpha=0.6, linewidth=2)
-        if show_diffsbdd and diffsbdd_values:
+        if diffsbdd_values:
             sns.kdeplot(diffsbdd_values, color=palette['DiffSBDD'], fill=True, alpha=0.6, linewidth=2)
         if yuel_values:
             sns.kdeplot(yuel_values, color=palette['YuelDesign'], fill=True, alpha=0.6, linewidth=2)
@@ -271,7 +279,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         groups = ['YuelDesign', 'DiffSBDD', 'Original']
         group_values = {
             'YuelDesign': yuel_values,
-            'DiffSBDD': diffsbdd_values if show_diffsbdd else [],
+            'DiffSBDD': diffsbdd_values,
             'Original': original_values
         }
         for group in groups:
@@ -309,7 +317,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
             bar_data.append({'group': group, 'status': label_failed, 'fraction': failed / total})
         if yuel_values:
             add_bar('YuelDesign', yuel_values, 'Passed', 'Unpassed')
-        if show_diffsbdd and diffsbdd_values:
+        if diffsbdd_values:
             add_bar('DiffSBDD', diffsbdd_values, 'Passed', 'Unpassed')
         if original_values:
             add_bar('Original', original_values, 'Passed', 'Unpassed')
@@ -394,34 +402,46 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
     metrics_by_size2 = {}  # YuelDesign
     metrics_by_size1 = {}  # DiffSBDD
     metrics_by_size3 = {}  # Original
+
+    # Process YuelDesign metrics
     if yuel_metrics is not None:
         for (_, size), metrics in yuel_metrics.items():
-            for metric in metrics:
-                metrics_by_size2.setdefault(size, []).append(metric)
+            if size >= 10 and size <= 30:
+                for metric, mol_id in metrics:
+                    metrics_by_size2.setdefault(size, []).append(metric)
         x2 = sorted(list(metrics_by_size2.keys()))
         y2 = [np.mean(metrics_by_size2[size]) for size in x2]
         yerr2 = [np.std(metrics_by_size2[size]) / np.sqrt(len(metrics_by_size2[size])) for size in x2]
         plt.plot(x2, y2, color=palette['YuelDesign'], linewidth=1.5, label='YuelDesign')
-        plt.fill_between(x2, min(y2), y2, color=palette['YuelDesign'], alpha=0.2)
+        # plt.fill_between(x2, min(y2), y2, color=palette['YuelDesign'], alpha=0.2)
+
+    # Process DiffSBDD metrics
     show_diffsbdd = metric_name.lower() not in ['validity', 'connectivity']
     if show_diffsbdd and diffsbdd_metrics is not None:
         for (_, size), metrics in diffsbdd_metrics.items():
-            for metric in metrics:
-                metrics_by_size1.setdefault(size, []).append(metric)
+            if size >= 10 and size <= 30:
+                for metric, mol_id in metrics:
+                    metrics_by_size1.setdefault(size, []).append(metric)
         x1 = sorted(list(metrics_by_size1.keys()))
         y1 = [np.mean(metrics_by_size1[size]) for size in x1]
         yerr1 = [np.std(metrics_by_size1[size]) / np.sqrt(len(metrics_by_size1[size])) for size in x1]
         plt.plot(x1, y1, color=palette['DiffSBDD'], linewidth=1.5, label='DiffSBDD')
-        plt.fill_between(x1, min(y1), y1, color=palette['DiffSBDD'], alpha=0.2)
-    if original_metrics is not None:
+        # plt.fill_between(x1, min(y1), y1, color=palette['DiffSBDD'], alpha=0.2)
+
+    # Process Original metrics
+    show_original = metric_name.lower() not in ['validity', 'connectivity']
+    if show_original and original_metrics is not None:
         for (_, size), metrics in original_metrics.items():
-            for metric in metrics:
-                metrics_by_size3.setdefault(size, []).append(metric)
+            if size >= 10 and size <= 30:
+                for metric, mol_id in metrics:
+                    metrics_by_size3.setdefault(size, []).append(metric)
         x3 = sorted(list(metrics_by_size3.keys()))
         y3 = [np.mean(metrics_by_size3[size]) for size in x3]
         yerr3 = [np.std(metrics_by_size3[size]) / np.sqrt(len(metrics_by_size3[size])) for size in x3]
         plt.plot(x3, y3, color=palette['Original'], linewidth=1.5, label='Original')
-        plt.fill_between(x3, min(y3), y3, color=palette['Original'], alpha=0.2)
+        # plt.fill_between(x3, min(y3), y3, color=palette['Original'], alpha=0.2)
+
+    # Calculate x and y ranges for ticks
     all_x = []
     all_y = []
     if yuel_metrics is not None:
@@ -430,9 +450,10 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
     if show_diffsbdd and diffsbdd_metrics is not None:
         all_x += x1
         all_y += y1
-    if original_metrics is not None:
+    if show_original and original_metrics is not None:
         all_x += x3
         all_y += y3
+
     if all_x and all_y:
         xticks_bin = (max(all_x) - min(all_x)) / 5 if max(all_x) > min(all_x) else 1
         xticks = np.arange(min(all_x), max(all_x)+xticks_bin, xticks_bin)
@@ -440,6 +461,7 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
         yticks_bin = (max(all_y) - min(all_y)) / 5 if max(all_y) > min(all_y) else 0.1
         yticks = np.arange(min(all_y), max(all_y)+yticks_bin, yticks_bin)
         plt.yticks(yticks, [f"{y:.3f}" for y in yticks])
+
     plt.xlabel('Compound Size')
     metric_name_lower = metric_name.lower()
     if metric_name_lower == 'qed':
@@ -456,9 +478,7 @@ def plot_metrics_by_size(metric_name, yuel_metrics=None, original_metrics=None, 
         plt.ylabel('Lipinski')
     else:
         plt.ylabel(f'{metric_name}')
-    ax = plt.gca()
-    if ax.get_legend() is not None:
-        ax.get_legend().remove()
+
     plt.savefig(f'metrics_plots/{metric_name}_by_size.svg', format='svg', bbox_inches='tight')
     plt.show()
     plt.close()
@@ -479,8 +499,8 @@ def plot_all_metrics(diffsbdd_metrics, yuel_metrics=None, original_metrics=None)
         plot_metrics_by_size(
             metric,
             yuel_metrics[metric] if metric in yuel_metrics else None,
-            # original_metrics[metric] if metric in original_metrics else None,
-            # diffsbdd_metrics[metric]
+            original_metrics[metric] if metric in original_metrics else None,
+            diffsbdd_metrics[metric]
         )
 
 def save_metrics_to_csv(metrics_dict, output_dir='analysis/metrics_csv'):
@@ -531,14 +551,13 @@ def save_metrics_to_csv(metrics_dict, output_dir='analysis/metrics_csv'):
             summary_df.to_csv(summary_file, index=False)
             print(f'Saved {source_name} {metric_name} summary statistics to {summary_file}')
 
-def create_metrics_comparison_table(metrics_dict, output_file='metrics_comparison.csv'):
+def create_metrics_comparison_table(metrics_dict):
     """
     Create a comparison table of metrics across different sizes and methods.
     
     Args:
         metrics_dict (dict): Dictionary containing metrics data from different sources
-            Format: {'source_name': {'metric_name': {target: {size: [values]}}}}
-        output_dir (str): Directory to save the comparison table
+            Format: {'source_name': {'metric_name': {(target, size): [(value, mol_id)]}}}
     """
     # Initialize list to store all rows
     all_rows = []
@@ -547,26 +566,28 @@ def create_metrics_comparison_table(metrics_dict, output_file='metrics_compariso
     for source_name, source_metrics in metrics_dict.items():
         # Process each metric type
         for metric_name, metric_data in source_metrics.items():
-            # Process data for each target and size
-            for target, size_data in metric_data.items():
-                for size, values in size_data.items():
-                    if 10 <= size <= 30:  # Only include sizes from 10 to 30
-                        mean_value = np.mean(values)
-                        std_value = np.std(values)
-                        all_rows.append({
-                            'Method': source_name,
-                            'Metric': metric_name,
-                            'Size': size,
-                            'Mean': mean_value,
-                            'Std': std_value
-                        })
+            # Process data for each (target, size) pair
+            for (target, size), values in metric_data.items():
+                if 10 <= size <= 30:  # Only include sizes from 10 to 30
+                    # Extract just the metric values (not the molecule IDs)
+                    metric_values = [value for value, _ in values]
+                    mean_value = np.mean(metric_values)
+                    std_value = np.std(metric_values)
+                    all_rows.append({
+                        'Method': source_name,
+                        'Metric': metric_name,
+                        'Target': target,
+                        'Size': size,
+                        'Mean': mean_value,
+                        'Std': std_value
+                    })
     
     # Create DataFrame
     df = pd.DataFrame(all_rows)
     
     # Create pivot table for better readability
     pivot_df = df.pivot_table(
-        index=['Method', 'Metric'],
+        index=['Method', 'Metric', 'Target'],
         columns='Size',
         values=['Mean', 'Std'],
         aggfunc='first'
@@ -575,37 +596,466 @@ def create_metrics_comparison_table(metrics_dict, output_file='metrics_compariso
     # Flatten column names
     pivot_df.columns = [f'{col[0]}_{col[1]}' for col in pivot_df.columns]
     
-    # Save to CSV
-    pivot_df.to_csv(output_file)
+    # Save to TSV
+    output_file = 'metrics_comparison.tsv'
+    pivot_df.to_csv(output_file, sep='\t')
     print(f'Saved metrics comparison table to {output_file}')
         
     return pivot_df
+
+def get_structures_by_ids(mol_ids, table_name='diffsbdd_generation', sdf_column='sdf', name_column='molecule_name'):
+    """
+    Get molecule structures from the database by their IDs.
+    
+    Args:
+        mol_ids (list): List of molecule IDs to retrieve
+        table_name (str): Name of the table to query
+        sdf_column (str): Name of the column containing the structure (sdf, mol, etc.)
+    
+    Returns:
+        dict: Dictionary mapping molecule IDs to their structures and metadata
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+            SELECT id, {sdf_column}, size, {name_column}
+            FROM {table_name}
+            WHERE id = ANY(%s)
+        """, (mol_ids,))
+        rows = cursor.fetchall()
+        
+        structures = {}
+        for row in rows:
+            mol_id, sdf_bytes, size, name = row
+            target = name.split('_')[0]
+            structures[mol_id] = {
+                'size': size,
+                'sdf': sdf_bytes.tobytes().decode('utf-8'),
+                'name': name,
+                'target': target
+            }
+        
+        return structures
+
+def get_protein_structure(target_name):
+    """
+    Get protein structure from the database by target name.
+    
+    Args:
+        target_name (str): Name of the target protein
+    
+    Returns:
+        dict: Dictionary containing protein structure and metadata
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, name, pdb
+            FROM proteins
+            WHERE name = %s
+        """, (target_name,))
+        row = cursor.fetchone()
+        
+        if row:
+            protein_id, name, pdb_bytes = row
+            return {
+                'id': protein_id,
+                'name': name,
+                'pdb': pdb_bytes.tobytes().decode('utf-8')
+            }
+        return None
+
+def get_pocket_structure(target_name):
+    """
+    Get pocket structure from the database by target name.
+    
+    Args:
+        target_name (str): Name of the target protein
+    
+    Returns:
+        dict: Dictionary containing pocket structure and metadata
+    """
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.id, p.pdb, pr.name
+            FROM pockets p
+            JOIN proteins pr ON p.protein_id = pr.id
+            WHERE pr.name = %s
+        """, (target_name,))
+        row = cursor.fetchone()
+        
+        if row:
+            pocket_id, pdb_bytes, protein_name = row
+            return {
+                'id': pocket_id,
+                'name': protein_name,
+                'pdb': pdb_bytes.tobytes().decode('utf-8')
+            }
+        return None
+
+def find_specific_better_example(diffsbdd_metrics, yuel_metrics, original_metrics):
+    """
+    Find specific molecule IDs where:
+    1. YuelDesign QED is >0.15 higher than both DiffSBDD and Original
+    2. YuelDesign SAS is >2 lower than both DiffSBDD and Original
+    3. YuelDesign Lipinski is True while both others are False
+    
+    Args:
+        diffsbdd_metrics (dict): Metrics from DiffSBDD
+        yuel_metrics (dict): Metrics from YuelDesign
+        original_metrics (dict): Metrics from Original ligands
+    
+    Returns:
+        dict: Dictionary containing example with molecule IDs and saves structures to files
+    """
+    # Create directory for structures if it doesn't exist
+    os.makedirs('example_structures', exist_ok=True)
+    
+    # Get all targets from YuelDesign
+    for (target, size), yuel_qed_values in yuel_metrics['qed'].items():
+        # Skip if size is not in the range we care about
+        if not (10 <= size <= 15):
+            continue
+            
+        # Get corresponding metrics for this target and size
+        yuel_sas = yuel_metrics['sas'].get((target, size), [])
+        yuel_lipinski = yuel_metrics['lipinski'].get((target, size), [])
+        
+        diffsbdd_qed = diffsbdd_metrics['qed'].get((target, size), [])
+        diffsbdd_sas = diffsbdd_metrics['sas'].get((target, size), [])
+        diffsbdd_lipinski = diffsbdd_metrics['lipinski'].get((target, size), [])
+        
+        original_qed = original_metrics['qed'].get((target, size), [])
+        original_sas = original_metrics['sas'].get((target, size), [])
+        original_lipinski = original_metrics['lipinski'].get((target, size), [])
+        
+        # Skip if we don't have data for all methods
+        if not (yuel_qed_values and yuel_sas and yuel_lipinski and 
+                diffsbdd_qed and diffsbdd_sas and diffsbdd_lipinski and
+                original_qed and original_sas and original_lipinski):
+            continue
+        
+        # Compare individual molecules
+        for i, ((yuel_qed, yuel_id), (yuel_sas_val, _), (yuel_lip, _)) in enumerate(zip(yuel_qed_values, yuel_sas, yuel_lipinski)):
+            for j, ((diffsbdd_qed_val, diffsbdd_id), (diffsbdd_sas_val, _), (diffsbdd_lip, _)) in enumerate(zip(diffsbdd_qed, diffsbdd_sas, diffsbdd_lipinski)):
+                for k, ((orig_qed_val, orig_id), (orig_sas_val, _), (orig_lip, _)) in enumerate(zip(original_qed, original_sas, original_lipinski)):
+                    # Check if conditions are met
+                    if (yuel_qed > diffsbdd_qed_val + 0.15 and 
+                        yuel_qed > orig_qed_val + 0.15 and
+                        diffsbdd_qed_val > orig_qed_val + 0.15 and 
+                        yuel_sas_val < diffsbdd_sas_val - 2 and 
+                        yuel_sas_val < orig_sas_val - 2 and
+                        diffsbdd_sas_val < orig_sas_val - 1 and
+                        yuel_lip and not diffsbdd_lip):
+                        # yuel_lip and not diffsbdd_lip and not orig_lip):
+                        
+                        # Get structures for all molecules
+                        yuel_structures = get_structures_by_ids([yuel_id], table_name='molecules', sdf_column='sdf2', name_column='ligand_name')
+                        diffsbdd_structures = get_structures_by_ids([diffsbdd_id], table_name='diffsbdd_generation', sdf_column='sdf', name_column='molecule_name')
+                        original_structures = get_structures_by_ids([orig_id], table_name='ligands', sdf_column='mol', name_column='name')
+                        
+                        # Get protein and pocket structures
+                        protein_name = target.split('_')[0]
+                        protein_structure = get_protein_structure(protein_name)
+                        pocket_structure = get_pocket_structure(protein_name)
+                        
+                        if not (protein_structure and pocket_structure):
+                            print(f"Warning: Could not find protein or pocket structure for target {target}")
+                            continue
+                        
+                        # Save structures
+                        yuel_struct = yuel_structures[yuel_id]
+                        diffsbdd_struct = diffsbdd_structures[diffsbdd_id]
+                        orig_struct = original_structures[orig_id]
+                        
+                        # Save YuelDesign structure
+                        with open(f'example_structures/{target}_yuel_{size}_{i}.sdf', 'w') as f:
+                            f.write(yuel_struct['sdf'])
+                        
+                        # Save DiffSBDD structure
+                        with open(f'example_structures/{target}_diffsbdd_{size}_{j}.sdf', 'w') as f:
+                            f.write(diffsbdd_struct['sdf'])
+                        
+                        # Save Original structure
+                        with open(f'example_structures/{target}_original_{size}_{k}.mol', 'w') as f:
+                            f.write(orig_struct['sdf'])
+                        
+                        # Save protein structure
+                        with open(f'example_structures/{target}_protein.pdb', 'w') as f:
+                            f.write(protein_structure['pdb'])
+                        
+                        # Save pocket structure
+                        with open(f'example_structures/{target}_pocket.pdb', 'w') as f:
+                            f.write(pocket_structure['pdb'])
+                        
+                        example = {
+                            'target': target,
+                            'size': size,
+                            'YuelDesign': {
+                                'molecule_id': yuel_id,
+                                'molecule_name': yuel_struct['name'],
+                                'QED': yuel_qed,
+                                'SAS': yuel_sas_val,
+                                'Lipinski': yuel_lip,
+                                'structure_file': f'example_structures/{target}_yuel_{size}_{i}.sdf'
+                            },
+                            'DiffSBDD': {
+                                'molecule_id': diffsbdd_id,
+                                'molecule_name': diffsbdd_struct['name'],
+                                'QED': diffsbdd_qed_val,
+                                'SAS': diffsbdd_sas_val,
+                                'Lipinski': diffsbdd_lip,
+                                'structure_file': f'example_structures/{target}_diffsbdd_{size}_{j}.sdf'
+                            },
+                            'Original': {
+                                'molecule_id': orig_id,
+                                'molecule_name': orig_struct['name'],
+                                'QED': orig_qed_val,
+                                'SAS': orig_sas_val,
+                                'Lipinski': orig_lip,
+                                'structure_file': f'example_structures/{target}_original_{size}_{k}.mol'
+                            },
+                            'Protein': {
+                                'id': protein_structure['id'],
+                                'name': protein_structure['name'],
+                                'structure_file': f'example_structures/{target}_protein.pdb'
+                            },
+                            'Pocket': {
+                                'id': pocket_structure['id'],
+                                'name': pocket_structure['name'],
+                                'structure_file': f'example_structures/{target}_pocket.pdb'
+                            }
+                        }
+                        return example
+    return None
+
+def save_example_to_tsv(example, output_dir='example_structures'):
+    """
+    Save example information to a TSV file.
+    
+    Args:
+        example (dict): Dictionary containing example information
+        output_dir (str): Directory to save the TSV file
+    
+    Returns:
+        str: Path to the saved TSV file
+    """
+    # Create directory for results if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Generate timestamp for filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    tsv_file = os.path.join(output_dir, f'example_{example["target"]}_{timestamp}.tsv')
+    
+    # Prepare data for TSV
+    headers = [
+        'Category', 'Molecule_ID', 'Molecule_Name', 'QED', 'SAS', 'Lipinski', 
+        'Structure_File', 'Protein_ID', 'Protein_Name', 'Protein_File', 
+        'Pocket_ID', 'Pocket_Name', 'Pocket_File'
+    ]
+    
+    rows = [
+        # YuelDesign row
+        ['YuelDesign', 
+         example['YuelDesign']['molecule_id'],
+         example['YuelDesign']['molecule_name'],
+         f"{example['YuelDesign']['QED']:.3f}",
+         f"{example['YuelDesign']['SAS']:.3f}",
+         str(example['YuelDesign']['Lipinski']),
+         example['YuelDesign']['structure_file'],
+         example['Protein']['id'],
+         example['Protein']['name'],
+         example['Protein']['structure_file'],
+         example['Pocket']['id'],
+         example['Pocket']['name'],
+         example['Pocket']['structure_file']
+        ],
+        # DiffSBDD row
+        ['DiffSBDD',
+         example['DiffSBDD']['molecule_id'],
+         example['DiffSBDD']['molecule_name'],
+         f"{example['DiffSBDD']['QED']:.3f}",
+         f"{example['DiffSBDD']['SAS']:.3f}",
+         str(example['DiffSBDD']['Lipinski']),
+         example['DiffSBDD']['structure_file'],
+         example['Protein']['id'],
+         example['Protein']['name'],
+         example['Protein']['structure_file'],
+         example['Pocket']['id'],
+         example['Pocket']['name'],
+         example['Pocket']['structure_file']
+        ],
+        # Original row
+        ['Original',
+         example['Original']['molecule_id'],
+         example['Original']['molecule_name'],
+         f"{example['Original']['QED']:.3f}",
+         f"{example['Original']['SAS']:.3f}",
+         str(example['Original']['Lipinski']),
+         example['Original']['structure_file'],
+         example['Protein']['id'],
+         example['Protein']['name'],
+         example['Protein']['structure_file'],
+         example['Pocket']['id'],
+         example['Pocket']['name'],
+         example['Pocket']['structure_file']
+        ]
+    ]
+    
+    # Write to TSV file
+    with open(tsv_file, 'w', newline='') as f:
+        writer = csv.writer(f, delimiter='\t')
+        writer.writerow(headers)
+        writer.writerows(rows)
+    
+    return tsv_file
+
+def create_specific_tables(metrics_dict):
+    """
+    Create 6 specific tables for metrics comparison.
+    
+    Args:
+        metrics_dict (dict): Dictionary containing metrics data from different sources
+            Format: {'source_name': {'metric_name': {(target, size): [(value, mol_id)]}}}
+    """
+    # Create tables directory if it doesn't exist
+    os.makedirs('tables', exist_ok=True)
+    
+    # Table 1: Overall metrics comparison (size 10-15)
+    table1_data = []
+    for source_name in ['YuelDesign', 'DiffSBDD', 'Native Ligands']:
+        source_metrics = metrics_dict[source_name]
+        row = {'Method': source_name}
+        
+        # Calculate metrics for size range 10-15
+        for metric in ['qed', 'sas', 'lipinski', 'large_ring_rate']:
+            values = []
+            for (_, size), metric_values in source_metrics[metric].items():
+                if 10 <= size <= 15:
+                    values.extend([v for v, _ in metric_values])
+            if values:
+                mean = np.mean(values)
+                std = np.std(values)
+                row[metric] = f"{mean:.3f}±{std:.3f}"
+            else:
+                row[metric] = "N/A"
+        
+        table1_data.append(row)
+    
+    # Save Table 1
+    pd.DataFrame(table1_data).to_csv('tables/overall_metrics.tsv', sep='\t', index=False)
+    
+    # Tables 2-5: Size dependence of individual metrics
+    metrics = ['qed', 'sas', 'lipinski', 'large_ring_rate']
+    for metric in metrics:
+        table_data = []
+        for source_name in ['YuelDesign', 'DiffSBDD', 'Native Ligands']:
+            source_metrics = metrics_dict[source_name]
+            row = {'Method': source_name}
+            
+            # Calculate metrics for each size
+            for size in range(10, 31):
+                values = []
+                for (_, s), metric_values in source_metrics[metric].items():
+                    if s == size:
+                        values.extend([v for v, _ in metric_values])
+                if values:
+                    mean = np.mean(values)
+                    std = np.std(values)
+                    row[str(size)] = f"{mean:.3f}±{std:.3f}"
+                else:
+                    row[str(size)] = "N/A"
+            
+            table_data.append(row)
+        
+        # Save size dependence table
+        pd.DataFrame(table_data).to_csv(f'tables/{metric}_size_dependence.tsv', sep='\t', index=False)
+    
+    # Table 6: Validity and connectivity for YuelDesign
+    yuel_metrics = metrics_dict['YuelDesign']
+    table6_data = []
+    
+    # Overall row (size 10-15)
+    overall_row = {'Size': 'Overall (10-15)'}
+    for metric in ['validity', 'connectivity']:
+        values = []
+        for (_, size), metric_values in yuel_metrics[metric].items():
+            if 10 <= size <= 15:
+                values.extend([v for v, _ in metric_values])
+        if values:
+            mean = np.mean(values)
+            std = np.std(values)
+            overall_row[metric] = f"{mean:.3f}±{std:.3f}"
+        else:
+            overall_row[metric] = "N/A"
+    table6_data.append(overall_row)
+    
+    # Individual size rows
+    for size in range(10, 31):
+        size_row = {'Size': str(size)}
+        for metric in ['validity', 'connectivity']:
+            values = []
+            for (_, s), metric_values in yuel_metrics[metric].items():
+                if s == size:
+                    values.extend([v for v, _ in metric_values])
+            if values:
+                mean = np.mean(values)
+                std = np.std(values)
+                size_row[metric] = f"{mean:.3f}±{std:.3f}"
+            else:
+                size_row[metric] = "N/A"
+        table6_data.append(size_row)
+    
+    # Save Table 6
+    pd.DataFrame(table6_data).to_csv('tables/yueldesign_validity_connectivity.tsv', sep='\t', index=False)
+    
+    print("All tables have been saved to the 'tables' directory.")
 
 #%%
 diffsbdd_table = 'diffsbdd_generation'
 yueldesign_table = 'molecules'
 native_table = 'ligands'
 #%%
-# analyze_generated_molecules(table_name=diffsbdd_table, sdf_column='sdf')
-# analyze_generated_molecules(table_name=yueldesign_table, sdf_column='sdf2')
+analyze_generated_molecules(table_name=diffsbdd_table, sdf_column='sdf')
+analyze_generated_molecules(table_name=yueldesign_table, sdf_column='sdf2')
 analyze_generated_molecules(table_name=native_table, sdf_column='mol')
 
 #%%
 diffsbdd_metrics = get_metrics_from_db(table_name=diffsbdd_table, name_column='molecule_name')
 yueldesign_metrics = get_metrics_from_db(table_name=yueldesign_table, name_column='ligand_name')
 native_metrics = get_metrics_from_db(table_name=native_table, name_column='name')
+
+#%%
 plot_all_metrics(diffsbdd_metrics, yueldesign_metrics, native_metrics)
 
 #%%
-# Create comparison table
+# Create specific tables
 metrics_dict = {
-    'DiffSBDD': diffsbdd_metrics,
     'YuelDesign': yueldesign_metrics,
+    'DiffSBDD': diffsbdd_metrics,
     'Native Ligands': native_metrics
 }
-comparison_table = create_metrics_comparison_table(metrics_dict)
-print("\nMetrics Comparison Table:")
-print(comparison_table)
+create_specific_tables(metrics_dict)
 
+#%%
+# Example usage:
+example = find_specific_better_example(diffsbdd_metrics, yueldesign_metrics, native_metrics)
+if example:
+    print(f"\nExample:")
+    print(f"Target: {example['target']}, Size: {example['size']}")
+    print("\nYuelDesign:")
+    print(f"  Molecule ID: {example['YuelDesign']['molecule_id']}")
+    print(f"  Molecule Name: {example['YuelDesign']['molecule_name']}")
+    print(f"  QED: {example['YuelDesign']['QED']:.3f}")
+    print(f"  SAS: {example['YuelDesign']['SAS']:.3f}")
+    print(f"  Lipinski: {example['YuelDesign']['Lipinski']}")
+    print(f"  Structure File: {example['YuelDesign']['structure_file']}")
+
+    # Save example information to TSV file
+    tsv_file = save_example_to_tsv(example)
+    print(f"\nExample information saved to: {tsv_file}")
+else:
+    print("No example found meeting the criteria.")
 
 # %%

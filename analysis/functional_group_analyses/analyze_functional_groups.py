@@ -1,3 +1,5 @@
+#%%
+
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import pandas as pd
@@ -5,15 +7,18 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 import psycopg2
 from contextlib import contextmanager
-import time
+import time, os
 from multiprocessing import Pool
 import io, sys
 from typing import List, Tuple, Optional
 from tqdm import tqdm
 from multiprocessing import Pool
 import json
-sys.path.append('../')
+sys.path.append('../..')
 from db_utils import db_connection
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
 from rdkit.RDLogger import DisableLog
 DisableLog('rdApp.*')
 
@@ -72,6 +77,36 @@ functional_groups = {
     # 特殊环类 Special ring structures
     'Cyclopropane': Chem.MolFromSmarts('C1CC1'),
     'Cyclobutane': Chem.MolFromSmarts('C1CCC1'),
+}
+
+# Add descriptions for each functional group
+functional_group_descriptions = {
+    'Carboxylic Acid': 'Organic compound containing a carboxyl group (-COOH), commonly found in amino acids and fatty acids',
+    'Ester': 'Organic compound formed by the reaction of an acid with an alcohol, characterized by -COO- linkage',
+    'Amide': 'Organic compound containing a carbonyl group (C=O) linked to a nitrogen atom, common in proteins and peptides',
+    'Ketone': 'Organic compound containing a carbonyl group (C=O) bonded to two carbon atoms',
+    'Aldehyde': 'Organic compound containing a carbonyl group (C=O) bonded to at least one hydrogen atom',
+    'Amine (Primary/Secondary)': 'Organic compound containing nitrogen with one or two alkyl/aryl groups attached',
+    'Amine (Tertiary)': 'Organic compound containing nitrogen with three alkyl/aryl groups attached',
+    'Nitrile': 'Organic compound containing a cyano group (-C≡N)',
+    'Alcohol': 'Organic compound containing a hydroxyl group (-OH) attached to a carbon atom',
+    'Phenol': 'Aromatic compound containing a hydroxyl group (-OH) directly attached to a benzene ring',
+    'Ether': 'Organic compound containing an oxygen atom connected to two alkyl or aryl groups',
+    'Epoxide': 'Cyclic ether with a three-membered ring containing an oxygen atom',
+    'Thiol': 'Organic compound containing a sulfhydryl group (-SH)',
+    'Thioether': 'Organic compound containing a sulfur atom connected to two alkyl or aryl groups',
+    'Sulfonamide': 'Organic compound containing a sulfonyl group (-SO2-) linked to an amine',
+    'Halogen': 'Element from group 17 (F, Cl, Br, I) that can form single bonds with carbon',
+    'Benzene': 'Aromatic hydrocarbon with a six-membered ring containing alternating double bonds',
+    'Pyridine': 'Heterocyclic aromatic compound with a nitrogen atom in a six-membered ring',
+    'Pyrimidine': 'Heterocyclic aromatic compound with two nitrogen atoms in a six-membered ring',
+    'Imidazole': 'Heterocyclic aromatic compound with two nitrogen atoms in a five-membered ring',
+    'Indole': 'Heterocyclic aromatic compound containing a benzene ring fused to a pyrrole ring',
+    'Furan': 'Heterocyclic aromatic compound with an oxygen atom in a five-membered ring',
+    'Thiophene': 'Heterocyclic aromatic compound with a sulfur atom in a five-membered ring',
+    'Oxazole': 'Heterocyclic aromatic compound containing both oxygen and nitrogen in a five-membered ring',
+    'Cyclopropane': 'Cyclic hydrocarbon with a three-membered carbon ring',
+    'Cyclobutane': 'Cyclic hydrocarbon with a four-membered carbon ring'
 }
 
 def ensure_functional_groups_column_exists():
@@ -302,16 +337,7 @@ def calculate_functional_groups():
     # 可视化
     visualize_statistics(summary, len(results))
 
-if __name__ == "__main__":
-    # calculate_functional_groups()
-    analyze_frequency()
-
-#%%
-
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-
+# data1 and data2 are obtained from the running resuls of analyze_frequency()
 # Data from Table 1 (68047 molecules)
 data1 = {
     "Functional Group": [
@@ -331,63 +357,107 @@ data1 = {
 # Data from Table 2 (210000 molecules)
 data2 = {
     "Functional Group": [
-        "Alcohol", "Amine (Primary/Secondary)", "Ether", "Benzene", 
-        "Amine (Tertiary)", "Pyridine", "Thioether", "Furan", 
-        "Phenol", "Pyrimidine", "Epoxide", "Thiol", 
-        "Halogen", "Cyclobutane", "Thiophene", "Imidazole", 
-        "Oxazole", "Indole"
+        "Alcohol", "Amine (Primary/Secondary)", "Ether", "Ketone", "Amide", "Benzene", "Amine (Tertiary)", "Pyridine",
+        "Ester", "Cyclopropane", "Thioether", "Furan", "Phenol", "Pyrimidine", "Epoxide", "Thiol", "Halogen",
+        "Cyclobutane", "Nitrile", "Thiophene", "Imidazole", "Oxazole", "Carboxylic Acid", "Aldehyde", "Sulfonamide", "Indole"
     ],
     "Percentage (Table 2)": [
-        72.75, 55.26, 48.23, 20.36, 20.13, 17.76, 10.70, 9.52,
-        7.29, 5.49, 5.43, 4.88, 4.67, 2.99, 2.03, 1.57,
-        1.43, 0.25
+        72.75, 55.26, 48.23, 46.79, 23.16, 20.36, 20.13, 17.76,
+        12.12, 12.02, 10.70, 9.52, 7.29, 5.49, 5.43, 4.88, 4.67,
+        2.99, 2.05, 2.03, 1.57, 1.43, 0.72, 0.65, 0.61, 0.25
     ]
 }
 
-dir_path = 'functional_groups_plots'
-os.makedirs(dir_path, exist_ok=True)
+def plot_functional_group_comparison():
+    """Plot the functional group comparison between Table 1 and Table 2"""
 
-# Create dataframes
-df1 = pd.DataFrame(data1)
-df2 = pd.DataFrame(data2)
+    dir_path = 'functional_groups_plots'
+    os.makedirs(dir_path, exist_ok=True)
 
-# Merge the two dataframes on "Functional Group"
-merged_df = pd.merge(df1, df2, on="Functional Group", how="inner")
+    # Create dataframes
+    df1 = pd.DataFrame(data1)
+    df2 = pd.DataFrame(data2)
 
-# Sort by Table 1 percentage (descending)
-merged_df = merged_df.sort_values(by="Percentage (Table 1)", ascending=False)
+    # Merge the two dataframes on "Functional Group"
+    merged_df = pd.merge(df1, df2, on="Functional Group", how="inner")
 
-# Control how many lowest ranked groups to show in the zoomed-in plot
-N_LOWEST_GROUPS = 8  # Change this value as needed
+    # Sort by Table 1 percentage (descending)
+    merged_df = merged_df.sort_values(by="Percentage (Table 1)", ascending=False)
 
-# Plotting
-plt.figure(figsize=(4, 3))
-bar_width = 0.35
-index = np.arange(len(merged_df))
+    # Control how many lowest ranked groups to show in the zoomed-in plot
+    N_LOWEST_GROUPS = 9  # Change this value as needed
 
-bars1 = plt.bar(index, merged_df["Percentage (Table 1)"], bar_width, label="Original", color='#a2c9ae')
-bars2 = plt.bar(index + bar_width, merged_df["Percentage (Table 2)"], bar_width, label="YuelDesign", color='#8e7fb8')
+    # Plotting
+    plt.figure(figsize=(5, 3))
+    bar_width = 0.35
+    index = np.arange(len(merged_df))
 
-plt.ylabel("Percentage (%)", fontsize=12)
-plt.xticks(index + bar_width/2, merged_df["Functional Group"], rotation=45, ha='right')
-plt.legend()
-plt.tight_layout()
-plt.savefig(f'{dir_path}/functional_group_comparison.svg', format='svg')
-plt.show()
+    bars1 = plt.bar(index, merged_df["Percentage (Table 1)"], bar_width, label="Original", color='#a2c9ae')
+    bars2 = plt.bar(index + bar_width, merged_df["Percentage (Table 2)"], bar_width, label="YuelDesign", color='#8e7fb8')
 
-# Plot for the last N_LOWEST_GROUPS ranked groups (lowest percentages in Table 1)
-lastN = merged_df.tail(N_LOWEST_GROUPS)
-plt.figure(figsize=(4, 3))
-indexN = np.arange(len(lastN))
+    plt.ylabel("Percentage (%)", fontsize=12)
+    plt.xticks(index + bar_width/2, merged_df["Functional Group"], rotation=45, ha='right')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{dir_path}/functional_group_comparison.svg', format='svg')
+    plt.show()
 
-bars1_N = plt.bar(indexN, lastN["Percentage (Table 1)"], bar_width, label="Original", color='#a2c9ae')
-bars2_N = plt.bar(indexN + bar_width, lastN["Percentage (Table 2)"], bar_width, label="YuelDesign", color='#8e7fb8')
+    # Plot for the last N_LOWEST_GROUPS ranked groups (lowest percentages in Table 1)
+    lastN = merged_df.tail(N_LOWEST_GROUPS)
+    plt.figure(figsize=(4, 3))
+    indexN = np.arange(len(lastN))
 
-plt.ylabel("Percentage (%)", fontsize=12)
-plt.xticks(indexN + bar_width/2, lastN["Functional Group"], rotation=45, ha='right')
-plt.legend()
-plt.tight_layout()
-plt.savefig(f'{dir_path}/functional_group_comparison_last{N_LOWEST_GROUPS}.svg', format='svg')
-plt.show()
+    bars1_N = plt.bar(indexN, lastN["Percentage (Table 1)"], bar_width, label="Original", color='#a2c9ae')
+    bars2_N = plt.bar(indexN + bar_width, lastN["Percentage (Table 2)"], bar_width, label="YuelDesign", color='#8e7fb8')
+
+    plt.ylabel("Percentage (%)", fontsize=12)
+    plt.xticks(indexN + bar_width/2, lastN["Functional Group"], rotation=45, ha='right')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f'{dir_path}/functional_group_comparison_last{N_LOWEST_GROUPS}.svg', format='svg')
+    plt.show()
+
+def save_tables():
+    """Save functional group analysis results to a TSV file using existing data1 and data2"""
+    # Create DataFrames from existing data
+    df1 = pd.DataFrame(data1)
+    df2 = pd.DataFrame(data2)
+    
+    # Merge the two dataframes on "Functional Group"
+    merged_df = pd.merge(df1, df2, on="Functional Group", how="outer")
+    
+    # Rename columns to match required format
+    merged_df = merged_df.rename(columns={
+        "Percentage (Table 1)": "Percentage in Native Ligands",
+        "Percentage (Table 2)": "Percentage in YuelDesign-generated molecules"
+    })
+    
+    # Add SMARTS patterns and descriptions
+    merged_df['SMARTS Pattern'] = merged_df['Functional Group'].apply(
+        lambda x: Chem.MolToSmarts(functional_groups[x]) if x in functional_groups else ""
+    )
+    merged_df['Description'] = merged_df['Functional Group'].apply(
+        lambda x: functional_group_descriptions.get(x, '')
+    )
+    
+    # Format percentage columns
+    for col in ['Percentage in Native Ligands', 'Percentage in YuelDesign-generated molecules']:
+        merged_df[col] = merged_df[col].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "0.00%")
+    
+    # Sort by Functional Group
+    merged_df = merged_df.sort_values('Functional Group')
+    
+    # Ensure tables directory exists
+    os.makedirs('tables', exist_ok=True)
+    
+    # Save to TSV file
+    merged_df.to_csv('tables/functional_groups.tsv', sep='\t', index=False)
+    print(f"Functional group analysis results saved to tables/functional_groups.tsv")
+
+# %%
+# calculate_functional_groups()
+# analyze_frequency()
+plot_functional_group_comparison()
+# save_tables()
 
 # %%
