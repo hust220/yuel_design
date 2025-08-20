@@ -96,6 +96,12 @@ class DDPM(pl.LightningModule):
             norm_values=normalize_factors,
         )
 
+    def update_device(self, device):
+        """Update the device for the model and its components"""
+        self.torch_device = device
+        if hasattr(self.edm, 'dynamics'):
+            self.edm.dynamics.update_device(device)
+
     def setup(self, stage: Optional[str] = None):
         dataset_type = ProteinLigandDataset
         if stage == 'fit':

@@ -200,6 +200,7 @@ def design_ligands(dataset, model, output_dir, n_samples, mol_size, random_seed,
         return torch.ones(_data['positions'].shape[0], device=device, dtype=const.TORCH_INT) * mol_size
 
     ddpm = DDPM.load_from_checkpoint(model, map_location=device).eval().to(device)
+    ddpm.update_device(device)  # Ensure all components use the correct device
     # ddpm.val_dataset = dataset
 
     dataloader = get_dataloader(
@@ -289,6 +290,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f'Using device: {device}')
 
     if args.pocket is not None:
         dataset = prepare_single_dataset(args.pocket, device)

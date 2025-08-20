@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import math
+from tqdm import tqdm
 
 from src import utils
 from src.egnn import Dynamics
@@ -151,7 +152,7 @@ class EDM(torch.nn.Module):
 
 #        print(111)
         # Sample p(z_s | z_t)
-        for s in reversed(range(0, self.T)):
+        for s in tqdm(reversed(range(0, self.T)), desc="Diffusion steps", total=self.T):
 #            print(112, s, n_samples)
             s_array = torch.full((n_samples, 1), fill_value=s, device=z.device)
             t_array = s_array + 1

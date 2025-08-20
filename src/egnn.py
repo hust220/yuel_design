@@ -219,6 +219,11 @@ class EGNN(nn.Module):
         else:
             self.to('cpu')
 
+    def update_device(self, device):
+        """Update the device for the model"""
+        self.device = device
+        self.to(device)
+
     def forward(self, h, x, edge_index, node_mask=None, ligand_mask=None, edge_mask=None):
         # Edit Emiel: Remove velocity as input
         distances, _ = coord2diff(x, edge_index)
@@ -315,6 +320,12 @@ class Dynamics(nn.Module):
         )
 
         self.edge_cache = {}
+
+    def update_device(self, device):
+        """Update the device for the model and clear edge cache"""
+        self.device = device
+        self.dynamics.update_device(device)
+        self.edge_cache = {}  # Clear cache when device changes
 
     def forward(self, t, xh, node_mask, ligand_mask, edge_mask, context):
         """

@@ -34,7 +34,6 @@ wget https://zenodo.org/records/15467850/files/moad.ckpt?download=1 -O models/mo
 
 ```shell
 mkdir -p models
-python -W ignore yuel_design.py --pocket 2req_pocket.pdb --model test.ckpt --size 15
 python yuel_design.py \
     --pocket 2req_pocket.pdb \
     --model models/moad.ckpt \
