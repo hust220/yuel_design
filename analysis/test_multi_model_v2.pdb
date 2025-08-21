@@ -1,0 +1,28 @@
+
+MODEL        1
+ATOM      1  N   ALA A   1       8.360  -0.601  -6.304  1.00  0.00           N
+ATOM      2  CA  ALA A   1       7.050  -0.000  -6.000  1.00  0.00           C
+ATOM      3  C   ALA A   1       6.000  -0.800  -5.500  1.00  0.00           C
+ATOM      4  O   ALA A   1       6.100  -1.900  -5.000  1.00  0.00           O
+ATOM      5  CB  ALA A   1       6.800   1.400  -6.500  1.00  0.00           C
+ATOM      6  H   ALA A   1       8.900  -1.200  -6.900  1.00  0.00           H  N-term H
+ATOM      7  H   ALA A   1       8.900  -0.100  -6.900  1.00  0.00           H  N-term H
+ENDMDL
+MODEL        2
+ATOM      1  N   ALA A   1       8.400  -0.650  -6.350  1.00  0.00           N
+ATOM      2  CA  ALA A   1       7.100  -0.050  -6.050  1.00  0.00           C
+ATOM      3  C   ALA A   1       6.050  -0.850  -5.550  1.00  0.00           C
+ATOM      4  O   ALA A   1       6.150  -1.950  -5.050  1.00  0.00           O
+ATOM      5  CB  ALA A   1       6.850   1.450  -6.550  1.00  0.00           C
+ATOM      6  H   ALA A   1       9.000  -1.200  -7.000  1.00  0.00           H  N-term H ; different H
+ATOM      7  H   ALA A   1       9.000  -0.100  -7.000  1.00  0.00           H  N-term H ; different H name same
+ENDMDL
+MODEL        3
+ATOM      1  N   ALA A   1       8.450  -0.700  -6.400  1.00  0.00           N
+ATOM      2  CA  ALA A   1       7.150  -0.100  -6.100  1.00  0.00           C
+ATOM      3  C   ALA A   1       6.100  -0.900  -5.600  1.00  0.00           C
+ATOM      4  O   ALA A   1       6.100  -2.000  -5.100  1.00  0.00           O
+ATOM      5  CB  ALA A   1       6.900   1.500  -6.600  1.00  0.00           C
+ATOM      6  H   ALA A   1       8.000  -1.200  -6.000  1.00  0.00           H  ; name can be same
+ATOM      7  H   ALA A   1       8.000  -0.100  -6.000  1.00  0.00           H  ; if serials are key
+ENDMDL

@@ -1,84 +1,22 @@
-# Exclude everything
-*
-!.gitignore
-!db_utils.py
-!README.md
-!train_yuel_design.py
-!yuel_design.py
-!LICENSE
+__pycache__
 
-# Don't exclude the src, configs, data/MOAD, analysis, tests, and resources directories
-!src/
-!configs/
-!data/
-!data/MOAD/
-!analysis/
-!tests/
-!resources/
+db_config
 
-# Include Python files in src and its subdirectories
-src/*
-!src/
-!src/*.py
-!src/**/
-!src/**/*.py
+/logs
+/models
+/trajectories
+/datasets
+/uploads
 
-# Include everything in configs
-configs/*
-!configs/*
+/data
+!/data/**/*.py
 
-# Include Python files in data and its subdirectories, and README.md in data/MOAD
-data/*
-!data/*.py
-!data/**/*.py
-!data/MOAD/README.md
+/analysis/predictions_2d.sdf
+/analysis/predictions.sdf
+/analysis/metrics_analyses/diffsbdd
+/analysis/interaction_analyses/best_generation_structures
+/analysis/usecase_analyses/7e2y_generation_2d.sdf
+/analysis/usecase_analyses/7e2y_generation_cdg.sdf
 
-# Include Python files in analysis and its subdirectories
-analysis/*
-!analysis/
-!analysis/*.py
-!analysis/**/
-!analysis/**/*.py
-
-# Include Python files in tests and its subdirectories
-tests/*
-!tests/
-!tests/*.py
-!tests/**/
-!tests/**/*.py
-
-# Include fpscores.pkl.gz in resources
-resources/*
-!resources/fpscores.pkl.gz
-
-# Exclude Python cache files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Exclude virtual environment
-venv/
-env/
-.env/
-
-# Exclude IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Exclude common data and model files
-*.pkl
-*.ckpt
-*.sdf
-*.pdb
-*.mol
-*.xyz
-*.csv
-*.txt
-
-# Override exclusions for specific files
-!analysis/evolution_analyses/mol_004.pdb
-!2req_0.mol
-!2req_pocket.pdb
-!2req_protein.pdb
+/tests
+!/tests/**/*.py

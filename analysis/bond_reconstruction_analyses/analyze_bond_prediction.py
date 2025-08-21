@@ -3,7 +3,7 @@ from rdkit import Chem
 from rdkit.Chem import QED
 import networkx as nx
 import sys
-sys.path.append('../')
+sys.path.append('../..')
 from db_utils import db_connection
 from src import sascorer, const
 from rdkit.RDLogger import DisableLog
@@ -20,7 +20,6 @@ import seaborn as sns
 import pandas as pd
 import os
 import numpy as np
-
 
 def is_valid(mol):
     # mol.RemoveAllConformers()
@@ -43,18 +42,30 @@ def is_connected(rdkit_mol):
     return nx.is_connected(G)
 
 def calculate_qed(mol):
-    # Default QED calculation (uses all 8 descriptors)
-    qed_score = QED.default(mol)
-
-    # Weighted QED (custom weights possible)
-    # weights = QED.weights_max  # Predefined weights from the paper
-    # qed_weighted = QED.qed(mol, weights)
-
-    return qed_score
+    try:
+        qed_score = QED.default(mol)
+        return qed_score
+    except Exception as e:
+        return None
 
 def calculate_sas(mol):
-    sas_score = sascorer.calculateScore(mol)
-    return sas_score
+    try:
+        sas_score = sascorer.calculateScore(mol)
+        return sas_score
+    except Exception as e:
+        return None
+
+def calculate_lipinski(mol):
+    try:
+        passes_ro5 = all([
+            Descriptors.MolWt(mol) <= 500,
+            Descriptors.MolLogP(mol) <= 5,
+            Lipinski.NumHDonors(mol) <= 5,
+            Lipinski.NumHAcceptors(mol) <= 10
+        ])
+        return passes_ro5
+    except Exception as e:
+        return None
 
 def get_existing_metrics(molecule_id):
     """Get existing metrics for a molecule from the database."""
@@ -223,21 +234,13 @@ def recalculate_bonds_with_distances(mol):
         # print(f"Error recalculating bonds with distances: {e}")
         return None
 
-def calculate_lipinski(mol):
-    passes_ro5 = all([
-        Descriptors.MolWt(mol) <= 500,
-        Descriptors.MolLogP(mol) <= 5,
-        Lipinski.NumHDonors(mol) <= 5,
-        Lipinski.NumHAcceptors(mol) <= 10
-    ])
-    return passes_ro5
 
 def create_metrics_table():
     """Create a table to store molecule metrics if it doesn't exist."""
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS molecule_metrics (
+                CREATE TABLE IF NOT EXISTS bond_reconstruction (
                     id SERIAL PRIMARY KEY,
                     molecule_id INTEGER,
                     bond_type TEXT NOT NULL,
@@ -279,19 +282,16 @@ def save_metrics_to_db(molecule_id, bond_type, metrics):
 def calculate_metrics(mol):
     if mol is None:
         return {'valid': False, 'qed': None, 'sas': None, 'lipinski': None}
-    try:
-        valid = is_valid(mol)
-        qed = calculate_qed(mol)
-        sas = calculate_sas(mol)
-        lipinski = calculate_lipinski(mol)
-        return {
-            'valid': valid,
-            'qed': qed,
-            'sas': sas,
-            'lipinski': lipinski
-        }
-    except Exception as e:
-        return {'valid': False, 'qed': None, 'sas': None, 'lipinski': None, 'error': str(e)}
+    valid = is_valid(mol)
+    qed = calculate_qed(mol)
+    sas = calculate_sas(mol)
+    lipinski = calculate_lipinski(mol)
+    return {
+        'valid': valid,
+        'qed': qed,
+        'sas': sas,
+        'lipinski': lipinski
+    }
 
 def process_molecule_batch(mol_ids, create_table=True):
     """Process a batch of molecules."""
@@ -355,7 +355,7 @@ def process_molecule_batch(mol_ids, create_table=True):
         with db_connection() as conn:
             with conn.cursor() as cur:
                 cur.executemany("""
-                    INSERT INTO molecule_metrics 
+                    INSERT INTO bond_reconstruction 
                         (molecule_id, bond_type, is_valid, qed, sas, lipinski)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     ON CONFLICT (molecule_id, bond_type) 
@@ -383,8 +383,8 @@ def plot_qed_distribution():
     with db_connection() as conn:
         query = """
             SELECT bond_type, qed
-            FROM molecule_metrics
-            WHERE qed IS NOT NULL
+            FROM bond_reconstruction
+            WHERE qed IS NOT NULL and is_valid = True
         """
         df_qed = pd.read_sql_query(query, conn)
     df_qed = df_qed[df_qed['bond_type'].isin(GROUP_ORDER)]
@@ -408,8 +408,8 @@ def plot_sas_distribution():
     with db_connection() as conn:
         query = """
             SELECT bond_type, sas
-            FROM molecule_metrics
-            WHERE sas IS NOT NULL
+            FROM bond_reconstruction
+            WHERE sas IS NOT NULL and is_valid = True
         """
         df_sas = pd.read_sql_query(query, conn)
     df_sas = df_sas[df_sas['bond_type'].isin(GROUP_ORDER)]
@@ -433,8 +433,8 @@ def plot_lipinski_distribution():
     with db_connection() as conn:
         query = """
             SELECT bond_type, lipinski
-            FROM molecule_metrics
-            WHERE lipinski IS NOT NULL
+            FROM bond_reconstruction
+            WHERE lipinski IS NOT NULL and is_valid = True
         """
         df_lipinski = pd.read_sql_query(query, conn)
     df_lipinski = df_lipinski[df_lipinski['bond_type'].isin(GROUP_ORDER)]
@@ -483,7 +483,7 @@ def plot_validity_distribution():
     with db_connection() as conn:
         query = """
             SELECT bond_type, is_valid
-            FROM molecule_metrics
+            FROM bond_reconstruction
             WHERE is_valid IS NOT NULL
         """
         df_validity = pd.read_sql_query(query, conn)
@@ -530,62 +530,56 @@ def plot_validity_distribution():
     print(validity_counts)
 
 def analyze_metric_distributions():
-    # plot_qed_distribution()
-    # plot_sas_distribution()
+    plot_qed_distribution()
+    plot_sas_distribution()
     plot_lipinski_distribution()
     plot_validity_distribution()
 
-def main():
+def run_calculation():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Analyze molecule bonds and calculate metrics')
-    parser.add_argument('--workers', type=int, default=1,
+    parser.add_argument('--workers', type=int, default=11,
                       help='Number of worker processes (default: 1)')
     parser.add_argument('--limit', type=int, default=None,
                       help='Limit the number of molecules to process (default: None)')
-    parser.add_argument('--batch', type=int, default=10,
+    parser.add_argument('--batch', type=int, default=1,
                       help='Number of molecules to process in each batch (default: 10)')
-    parser.add_argument('--analyze-only', action='store_true',
-                      help='Only analyze existing metrics without processing new molecules')
     args = parser.parse_args()
     
-    if args.analyze_only:
-        analyze_metric_distributions()
-    else:
-        # Create metrics table if it doesn't exist
-        create_metrics_table()
-        
-        # Get molecules from database that need metrics
-        ids = get_molecules_from_db(limit=args.limit)
-        
-        if not ids:
-            print("No molecules need processing.")
-            return
-        
-        # Prepare batches
-        mol_ids = [mol_id[0] for mol_id in ids]
-        batches = [mol_ids[i:i + args.batch] for i in range(0, len(mol_ids), args.batch)]
-        
-        # Set up parallel processing
-        pool = mp.Pool(processes=args.workers)
-        
-        # Process batches in parallel with progress bar
-        process_func = partial(process_molecule_batch, create_table=False)
-        list(tqdm(
-            pool.imap(process_func, batches),
-            total=len(batches),
-            desc="Processing batches",
-            unit="batch"
-        ))
-        
-        # Clean up
-        pool.close()
-        pool.join()
-
+    # Create metrics table if it doesn't exist
+    create_metrics_table()
+    
+    # Get molecules from database that need metrics
+    ids = get_molecules_from_db(limit=args.limit)
+    
+    if not ids:
+        print("No molecules need processing.")
+        return
+    
+    # Prepare batches
+    mol_ids = [mol_id[0] for mol_id in ids]
+    batches = [mol_ids[i:i + args.batch] for i in range(0, len(mol_ids), args.batch)]
+    
+    # Set up parallel processing
+    pool = mp.Pool(processes=args.workers)
+    
+    # Process batches in parallel with progress bar
+    process_func = partial(process_molecule_batch, create_table=False)
+    list(tqdm(
+        pool.imap(process_func, batches),
+        total=len(batches),
+        desc="Processing batches",
+        unit="batch"
+    ))
+    
+    # Clean up
+    pool.close()
+    pool.join()
 
 if __name__ == "__main__":
     # Set start method for multiprocessing
     # mp.set_start_method('spawn', force=True)
-    # main()
+    # run_calculation()
     analyze_metric_distributions()
 
 # %%

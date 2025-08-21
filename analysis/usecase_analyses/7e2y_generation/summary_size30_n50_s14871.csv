@@ -1,0 +1,2 @@
+name,n_samples,mol_size,random_seed,duration,attempts,invalid,unconnected,large_rings
+0,50,30,14871,1472.3983719348907,299,7,181,61

@@ -1,0 +1,64 @@
+mol_142646
+  RDKit          3D
+
+ 11 11  0  0  0  0  0  0  0  0999 V2000
+  -19.2656   13.8270    3.3769 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -20.3230   15.0282    1.0343 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -18.8654   15.0512    2.9523 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -18.7577   13.2479    4.4882 O   0  0  0  0  0  0  0  0  0  0  0  0
+  -16.2149   18.2062    3.8613 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -20.7474   13.8305    1.4719 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -17.9788   15.7389    3.9081 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -19.3650   15.6178    1.7599 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -17.4450   16.5933    3.3374 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -20.2229   13.2550    2.6068 C   0  0  0  0  0  0  0  0  0  0  0  0
+  -16.7778   17.3681    2.8047 N   0  0  0  0  0  0  0  0  0  0  0  0
+  1  3  4  0  0  0
+  1  4  1  0  0  0
+  1 10  4  0  0  0
+  2  6  4  0  0  0
+  2  8  4  0  0  0
+  3  7  1  0  0  0
+  3  8  4  0  0  0
+  5 11  1  0  0  0
+  6 10  4  0  0  0
+  7  9  1  0  0  0
+  9 11  1  0  0  0
+M  END
+> <_Name>
+mol_142646
+
+> <Bond_1_3_probs>
+Single:0.1203,Double:0.0018,Triple:0.0000,Aromatic:0.8779,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_1_4_probs>
+Single:0.9219,Double:0.0781,Triple:0.0000,Aromatic:0.0000,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_1_10_probs>
+Single:0.0895,Double:0.0003,Triple:0.0000,Aromatic:0.9102,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_2_6_probs>
+Single:0.0561,Double:0.0001,Triple:0.0000,Aromatic:0.9438,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_2_8_probs>
+Single:0.0591,Double:0.0065,Triple:0.0000,Aromatic:0.9344,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_3_7_probs>
+Single:0.9532,Double:0.0468,Triple:0.0000,Aromatic:0.0000,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_3_8_probs>
+Single:0.1018,Double:0.0148,Triple:0.0000,Aromatic:0.8834,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_5_11_probs>
+Single:0.4985,Double:0.2347,Triple:0.2667,Aromatic:0.0001,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_6_10_probs>
+Single:0.1315,Double:0.0016,Triple:0.0000,Aromatic:0.8669,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_7_9_probs>
+Single:0.8732,Double:0.0913,Triple:0.0356,Aromatic:0.0000,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+> <Bond_9_11_probs>
+Single:0.9513,Double:0.0247,Triple:0.0240,Aromatic:0.0000,Dative:0.0000,Ionic:0.0000,Hydrogen:0.0000,ThreeCenter:0.0000,Unspecified:0.0000,No Bond:0.0000
+
+$$$$

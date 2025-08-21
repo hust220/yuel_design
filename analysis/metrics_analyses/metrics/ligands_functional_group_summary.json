@@ -1,0 +1,21 @@
+{
+    "Amine (Primary/Secondary)": 48484,
+    "Amine (Tertiary)": 23714,
+    "Alcohol": 60091,
+    "Ether": 36933,
+    "Pyrimidine": 19281,
+    "Imidazole": 12172,
+    "Furan": 14071,
+    "Benzene": 23726,
+    "Halogen": 7891,
+    "Pyridine": 7668,
+    "Phenol": 5382,
+    "Thioether": 6018,
+    "Thiol": 1909,
+    "Thiophene": 1424,
+    "Cyclopropane": 698,
+    "Epoxide": 184,
+    "Oxazole": 47,
+    "Cyclobutane": 155,
+    "Indole": 5
+}

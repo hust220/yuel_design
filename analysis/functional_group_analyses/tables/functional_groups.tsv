@@ -1,0 +1,27 @@
+Functional Group	Percentage in Native Ligands	Percentage in YuelDesign-generated molecules	SMARTS Pattern	Description
+Alcohol	88.31%	72.75%	[C&X4][O&H1]	Organic compound containing a hydroxyl group (-OH) attached to a carbon atom
+Aldehyde	0.00%	0.65%	[C&X3&H1](=O)C	Organic compound containing a carbonyl group (C=O) bonded to at least one hydrogen atom
+Amide	0.00%	23.16%	C(=O)N	Organic compound containing a carbonyl group (C=O) linked to a nitrogen atom, common in proteins and peptides
+Amine (Primary/Secondary)	71.25%	55.26%	[N&X3;H2,H1;!$(NC=O)]	Organic compound containing nitrogen with one or two alkyl/aryl groups attached
+Amine (Tertiary)	34.85%	20.13%	[N&X3]([#6])([#6])[#6]	Organic compound containing nitrogen with three alkyl/aryl groups attached
+Benzene	34.87%	20.36%	C1CCCCC1	Aromatic hydrocarbon with a six-membered ring containing alternating double bonds
+Carboxylic Acid	0.00%	0.72%	C(=O)[O&H1]	Organic compound containing a carboxyl group (-COOH), commonly found in amino acids and fatty acids
+Cyclobutane	0.23%	2.99%	C1CCC1	Cyclic hydrocarbon with a four-membered carbon ring
+Cyclopropane	1.03%	12.02%	C1CC1	Cyclic hydrocarbon with a three-membered carbon ring
+Epoxide	0.27%	5.43%	[C&R]1O[C&R]1	Cyclic ether with a three-membered ring containing an oxygen atom
+Ester	0.00%	12.12%	C(=O)O*	Organic compound formed by the reaction of an acid with an alcohol, characterized by -COO- linkage
+Ether	54.28%	48.23%	[O&D2]([#6])[#6]	Organic compound containing an oxygen atom connected to two alkyl or aryl groups
+Furan	20.68%	9.52%	C1CCCO1	Heterocyclic aromatic compound with an oxygen atom in a five-membered ring
+Halogen	11.60%	4.67%	[F,Cl,Br,I]	Element from group 17 (F, Cl, Br, I) that can form single bonds with carbon
+Imidazole	17.89%	1.57%	C1CNC[N&H1]1	Heterocyclic aromatic compound with two nitrogen atoms in a five-membered ring
+Indole	0.01%	0.25%	C1CC2CCCC2[N&H1]1	Heterocyclic aromatic compound containing a benzene ring fused to a pyrrole ring
+Ketone	0.00%	46.79%	C(=O)C	Organic compound containing a carbonyl group (C=O) bonded to two carbon atoms
+Nitrile	0.00%	2.05%	[C&!R]#N	Organic compound containing a cyano group (-C≡N)
+Oxazole	0.07%	1.43%	C1COCNC1	Heterocyclic aromatic compound containing both oxygen and nitrogen in a five-membered ring
+Phenol	7.91%	7.29%	C1CCCCC1[O&H1]	Aromatic compound containing a hydroxyl group (-OH) directly attached to a benzene ring
+Pyridine	11.27%	17.76%	N1CCCCC1	Heterocyclic aromatic compound with a nitrogen atom in a six-membered ring
+Pyrimidine	28.33%	5.49%	C1CNCNC1	Heterocyclic aromatic compound with two nitrogen atoms in a six-membered ring
+Sulfonamide	0.00%	0.61%	S(=O)(=O)N	Organic compound containing a sulfonyl group (-SO2-) linked to an amine
+Thioether	8.84%	10.70%	[#16]([#6])[#6]	Organic compound containing a sulfur atom connected to two alkyl or aryl groups
+Thiol	2.81%	4.88%	[#16&H1]	Organic compound containing a sulfhydryl group (-SH)
+Thiophene	2.09%	2.03%	C1CCSC1	Heterocyclic aromatic compound with a sulfur atom in a five-membered ring

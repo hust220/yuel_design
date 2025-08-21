@@ -1,0 +1,4 @@
+Category	Molecule_ID	Molecule_Name	QED	SAS	Lipinski	Structure_File	Protein_ID	Protein_Name	Protein_File	Pocket_ID	Pocket_Name	Pocket_File
+YuelDesign	142646	3jqa_1	0.779	1.818	True	example_structures/3jqa_1_yuel_11_1.sdf	29456	3jqa	example_structures/3jqa_1_protein.pdb	2979	3jqa	example_structures/3jqa_1_pocket.pdb
+DiffSBDD	5214	3jqa_1	0.445	4.698	False	example_structures/3jqa_1_diffsbdd_11_0.sdf	29456	3jqa	example_structures/3jqa_1_protein.pdb	2979	3jqa	example_structures/3jqa_1_pocket.pdb
+Original	40441	3jqa_1	0.230	5.979	False	example_structures/3jqa_1_original_11_0.mol	29456	3jqa	example_structures/3jqa_1_protein.pdb	2979	3jqa	example_structures/3jqa_1_pocket.pdb

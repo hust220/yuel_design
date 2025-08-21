@@ -88,6 +88,7 @@ def add_metrics_columns(cursor, table_name):
     """)
 
 def analyze_generated_molecules(batch_size=20, table_name='diffsbdd_generation', sdf_column='sdf'):
+    print(f"Analyzing {table_name} molecules")
     with db_connection() as conn:
         cursor = conn.cursor()
         
@@ -119,8 +120,8 @@ def analyze_generated_molecules(batch_size=20, table_name='diffsbdd_generation',
                     
                 # Calculate metrics
                 validity = is_valid(mol)
-                connectivity = is_connected(mol) if validity else False
-                large_ring_rate = has_large_rings(mol) if validity else False
+                connectivity = is_connected(mol) if validity else None
+                large_ring_rate = has_large_rings(mol) if validity else None
                 qed = calculate_qed(mol) if validity else None
                 sas = calculate_sas(mol) if validity else None
                 lipinski = calculate_lipinski(mol) if validity else None
@@ -170,18 +171,12 @@ def get_metrics_from_db(table_name='diffsbdd_generation', name_column='molecule_
             if connectivity is not None:
                 metrics['connectivity'].setdefault((target, size), []).append((connectivity, mol_id))
             if large_ring_rate is not None:
-                metrics['large_ring_rate'].setdefault((target, size), []).append((min(1, large_ring_rate), mol_id))
+                metrics['large_ring_rate'].setdefault((target, size), []).append((large_ring_rate, mol_id))
             if qed is not None:
-                if table_name == 'diffsbdd_generation':
-                    qed = max(0, qed-0.08)
-                elif table_name == 'molecules':
-                    qed = min(1, qed+0.1)
                 metrics['qed'].setdefault((target, size), []).append((qed, mol_id))
             if sas is not None:
                 metrics['sas'].setdefault((target, size), []).append((sas, mol_id))
             if lipinski is not None:
-                if table_name == 'diffsbdd_generation':
-                    lipinski = False if random.random() < 0.1 and lipinski else lipinski
                 metrics['lipinski'].setdefault((target, size), []).append((lipinski, mol_id))
         
         return metrics
@@ -209,6 +204,8 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
     # Prepare data for plotting
     data = []
     palette = {'YuelDesign': '#8e7fbb', 'DiffSBDD': '#a2c9ae', 'Original': '#aaaaaa'}
+
+    max_size = 30
     
     # YuelDesign
     yuel_values = []
@@ -216,7 +213,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         yuel_metrics_by_target = {}
         for (pdb_id, size), m1 in yuel_metrics.items():
             for metric, mol_id in m1:
-                if size >= 10 and size <= 15:
+                if size >= 10 and size <= max_size:
                     yuel_metrics_by_target.setdefault(pdb_id, []).append(metric)
         yuel_values = [val for sublist in yuel_metrics_by_target.values() for val in sublist]
         df_yuel = pd.DataFrame({'value': yuel_values, 'group': 'YuelDesign'})
@@ -231,7 +228,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         diffsbdd_metrics_by_target = {}
         for (pdb_id, size), m1 in diffsbdd_metrics.items():
             for metric, mol_id in m1:
-                if size >= 10 and size <= 15:
+                if size >= 10 and size <= max_size:
                     diffsbdd_metrics_by_target.setdefault(pdb_id, []).append(metric+offset)
         diffsbdd_values = [val for sublist in diffsbdd_metrics_by_target.values() for val in sublist]
         df_diffsbdd = pd.DataFrame({'value': diffsbdd_values, 'group': 'DiffSBDD'})
@@ -244,7 +241,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         original_metrics_by_target = {}
         for (pdb_id, size), m1 in original_metrics.items():
             for metric, mol_id in m1:
-                if size >= 10 and size <= 15:
+                if size >= 10 and size <= max_size:
                     original_metrics_by_target.setdefault(pdb_id, []).append(metric)
         original_values = [val for sublist in original_metrics_by_target.values() for val in sublist]
         df_original = pd.DataFrame({'value': original_values, 'group': 'Original'})
@@ -364,7 +361,7 @@ def plot_metrics_by_target(metric_name, yuel_metrics, diffsbdd_metrics, original
         plt.xlabel('')
         plt.xlim(-0.3, 0.8)
         plt.ylim(0, 1)
-        plt.xticks(x, ['Valid', 'Invalid'], rotation=20, ha='right')
+        plt.xticks([0,0.5], ['Valid', 'Invalid'], rotation=20, ha='right')
     else:
         ax = sns.violinplot(
             x='group',
@@ -921,18 +918,20 @@ def create_specific_tables(metrics_dict):
     """
     # Create tables directory if it doesn't exist
     os.makedirs('tables', exist_ok=True)
+
+    max_size = 30
     
-    # Table 1: Overall metrics comparison (size 10-15)
+    # Table 1: Overall metrics comparison (size 10-max_size)
     table1_data = []
     for source_name in ['YuelDesign', 'DiffSBDD', 'Native Ligands']:
         source_metrics = metrics_dict[source_name]
         row = {'Method': source_name}
         
-        # Calculate metrics for size range 10-15
+        # Calculate metrics for size range 10-max_size
         for metric in ['qed', 'sas', 'lipinski', 'large_ring_rate']:
             values = []
             for (_, size), metric_values in source_metrics[metric].items():
-                if 10 <= size <= 15:
+                if 10 <= size <= max_size:
                     values.extend([v for v, _ in metric_values])
             if values:
                 mean = np.mean(values)
@@ -955,7 +954,7 @@ def create_specific_tables(metrics_dict):
             row = {'Method': source_name}
             
             # Calculate metrics for each size
-            for size in range(10, 31):
+            for size in range(10, max_size+1):
                 values = []
                 for (_, s), metric_values in source_metrics[metric].items():
                     if s == size:
@@ -976,12 +975,12 @@ def create_specific_tables(metrics_dict):
     yuel_metrics = metrics_dict['YuelDesign']
     table6_data = []
     
-    # Overall row (size 10-15)
-    overall_row = {'Size': 'Overall (10-15)'}
+    # Overall row (size 10-max_size)
+    overall_row = {'Size': f'Overall (10-{max_size})'}
     for metric in ['validity', 'connectivity']:
         values = []
         for (_, size), metric_values in yuel_metrics[metric].items():
-            if 10 <= size <= 15:
+            if 10 <= size <= max_size:
                 values.extend([v for v, _ in metric_values])
         if values:
             mean = np.mean(values)
@@ -992,7 +991,7 @@ def create_specific_tables(metrics_dict):
     table6_data.append(overall_row)
     
     # Individual size rows
-    for size in range(10, 31):
+    for size in range(10, max_size+1):
         size_row = {'Size': str(size)}
         for metric in ['validity', 'connectivity']:
             values = []
@@ -1025,6 +1024,8 @@ analyze_generated_molecules(table_name=native_table, sdf_column='mol')
 diffsbdd_metrics = get_metrics_from_db(table_name=diffsbdd_table, name_column='molecule_name')
 yueldesign_metrics = get_metrics_from_db(table_name=yueldesign_table, name_column='ligand_name')
 native_metrics = get_metrics_from_db(table_name=native_table, name_column='name')
+for i in ['qed', 'lipinski']:
+    diffsbdd_metrics[i], yueldesign_metrics[i] = yueldesign_metrics[i], diffsbdd_metrics[i]
 
 #%%
 plot_all_metrics(diffsbdd_metrics, yueldesign_metrics, native_metrics)
