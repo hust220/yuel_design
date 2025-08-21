@@ -8,7 +8,7 @@ db_config
 /datasets
 /uploads
 
-/data
+/data/*
 !/data/**/*.py
 
 /analysis/predictions_2d.sdf
@@ -18,5 +18,5 @@ db_config
 /analysis/usecase_analyses/7e2y_generation_2d.sdf
 /analysis/usecase_analyses/7e2y_generation_cdg.sdf
 
-/tests
+/tests/*
 !/tests/**/*.py
