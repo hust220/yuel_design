@@ -1,0 +1,41 @@
+exp_name: 'dist'
+checkpoints: models
+logs: logs
+device: cuda
+log_iterations: 20
+wandb_entity: null
+enable_progress_bar: True
+dataset: dist
+
+# Training parameters
+lr: 1.0e-4
+batch_size: 1
+n_epochs: 1000
+test_epochs: 20
+num_workers: 8
+save_every_n_steps: 1000  # Save checkpoint every 1000 training steps
+
+# Evoformer parameters
+c_m: 64
+c_z: 64
+c_hidden_seq_att: 32
+c_hidden_opm: 32
+c_hidden_mul: 32
+c_hidden_pair_att: 32
+c_s: 1
+no_heads_seq: 8
+no_heads_pair: 4
+no_blocks: 16
+transition_n: 4
+blocks_per_ckpt: 4
+inf: 1e9
+eps: 1e-10
+
+# D3PM specific parameters
+timesteps: 100
+forward_type: uniform
+hybrid_loss_coeff: 0.0
+
+# Dataset parameters
+cache_mode: memory
+cache_dir: cache

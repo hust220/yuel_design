@@ -1,0 +1,101 @@
+import os
+import pickle
+import tempfile
+import shutil
+import uuid
+import hashlib
+
+
+class FileCache:
+    """Flexible cache supporting in-memory, file-based, or no caching"""
+    
+    def __init__(self, cache_mode='memory', cache_dir='cache'):
+        """
+        Args:
+            cache_mode: 'memory' (default), 'file', or 'none'
+            cache_dir: directory for file cache (default: 'cache')
+        """
+        self.cache_mode = cache_mode
+        
+        if cache_mode == 'memory':
+            # Use in-memory cache
+            self.cache_data = {}
+            self.cache_dir = None
+        elif cache_mode == 'file':
+            # Use file-based cache
+            self.cache_data = None
+            if cache_dir is None:
+                self.cache_dir = tempfile.mkdtemp(prefix='dataset_cache_')
+            else:
+                self.cache_dir = cache_dir
+                os.makedirs(self.cache_dir, exist_ok=True)
+            
+            # Generate unique process identifier to avoid conflicts
+            self.process_id = str(uuid.uuid4())[:8]  # Short unique ID for this process
+        else:  # cache_mode == 'none'
+            # No caching
+            self.cache_data = None
+            self.cache_dir = None
+    
+    def _get_cache_path(self, item_id):
+        """Get cache file path for given item_id with process-safe naming"""
+        # Create a hash of item_id to avoid special characters in filename
+        item_hash = hashlib.md5(str(item_id).encode()).hexdigest()[:16]
+        # Include process ID to avoid conflicts between different training processes
+        filename = f'cache_{self.process_id}_{item_hash}.pkl'
+        return os.path.join(self.cache_dir, filename)
+    
+    def get(self, item_id):
+        """Load data from cache"""
+        if self.cache_mode == 'none':
+            return None
+        
+        if self.cache_mode == 'memory':
+            # Load from memory cache
+            return self.cache_data.get(item_id)
+        else:  # cache_mode == 'file'
+            # Load from file cache
+            cache_path = self._get_cache_path(item_id)
+            if os.path.exists(cache_path):
+                try:
+                    with open(cache_path, 'rb') as f:
+                        return pickle.load(f)
+                except (pickle.PickleError, EOFError, FileNotFoundError):
+                    # Remove corrupted cache file
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+            return None
+    
+    def set(self, item_id, data):
+        """Save data to cache"""
+        if self.cache_mode == 'none':
+            return
+        
+        if self.cache_mode == 'memory':
+            # Save to memory cache
+            self.cache_data[item_id] = data
+        else:  # cache_mode == 'file'
+            # Save to file cache
+            cache_path = self._get_cache_path(item_id)
+            try:
+                with open(cache_path, 'wb') as f:
+                    pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+            except (OSError, IOError) as e:
+                print(f"Warning: Failed to save cache for item {item_id}: {e}")
+    
+    def cleanup(self):
+        """Clean up cache"""
+        if self.cache_mode == 'memory':
+            # Clear memory cache
+            self.cache_data.clear()
+        elif self.cache_mode == 'file':
+            # Clean up file cache directory
+            if self.cache_dir and os.path.exists(self.cache_dir):
+                shutil.rmtree(self.cache_dir)
+        # No cleanup needed for 'none' mode
+    
+    def __del__(self):
+        """Cleanup cache directory when object is destroyed"""
+        # Note: This might not always be called due to Python's garbage collection
+        # It's better to call cleanup() explicitly when done
+        pass
