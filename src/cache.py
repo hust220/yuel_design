@@ -2,20 +2,21 @@ import os
 import pickle
 import tempfile
 import shutil
-import uuid
 import hashlib
 
 
 class FileCache:
     """Flexible cache supporting in-memory, file-based, or no caching"""
     
-    def __init__(self, cache_mode='memory', cache_dir='cache'):
+    def __init__(self, cache_mode='memory', cache_dir='cache', dataset_name=None):
         """
         Args:
             cache_mode: 'memory' (default), 'file', or 'none'
             cache_dir: directory for file cache (default: 'cache')
+            dataset_name: name of the dataset for cache file naming
         """
         self.cache_mode = cache_mode
+        self.dataset_name = dataset_name
         
         if cache_mode == 'memory':
             # Use in-memory cache
@@ -23,26 +24,23 @@ class FileCache:
             self.cache_dir = None
         elif cache_mode == 'file':
             # Use file-based cache
+            if dataset_name is None:
+                raise ValueError("dataset_name cannot be None when cache_mode is 'file'")
             self.cache_data = None
             if cache_dir is None:
                 self.cache_dir = tempfile.mkdtemp(prefix='dataset_cache_')
             else:
                 self.cache_dir = cache_dir
                 os.makedirs(self.cache_dir, exist_ok=True)
-            
-            # Generate unique process identifier to avoid conflicts
-            self.process_id = str(uuid.uuid4())[:8]  # Short unique ID for this process
         else:  # cache_mode == 'none'
             # No caching
             self.cache_data = None
             self.cache_dir = None
     
     def _get_cache_path(self, item_id):
-        """Get cache file path for given item_id with process-safe naming"""
-        # Create a hash of item_id to avoid special characters in filename
-        item_hash = hashlib.md5(str(item_id).encode()).hexdigest()[:16]
-        # Include process ID to avoid conflicts between different training processes
-        filename = f'cache_{self.process_id}_{item_hash}.pkl'
+        """Get cache file path for given item_id with consistent naming"""
+        # Use dataset name in filename to allow cache reuse across training runs
+        filename = f'{self.dataset_name}_{item_id}.pkl'
         return os.path.join(self.cache_dir, filename)
     
     def get(self, item_id):

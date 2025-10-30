@@ -14,7 +14,7 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn', force=True)
 
 from src.lightning1 import YuelDesign
-from src.edm2 import EDM as EDM2
+from src.CoordsEDM import EDM as EDM2
 from src.DistD3PM import D3PM as DistD3PM
 from src.utils import disable_rdkit_logging, set_deterministic, Logger
 from src.datasets import DATASET_CONFIGS, DistDataset, CoordsDataset
@@ -126,24 +126,39 @@ def main(args):
 
     print("Device: ", device, "Accelerator: ", accelerator)
     
-    trainer = Trainer(
-        max_epochs=args['n_epochs'],
-        logger=wandb_logger,
-        callbacks=[checkpoint_callback, frequent_checkpoint_callback],
-        accelerator=accelerator,
-        devices=1,
-        num_sanity_val_steps=0,
-        enable_progress_bar=args['enable_progress_bar'],
-    )
 
-    if args['resume'] is None:
-        last_checkpoint = None
+    if args.get('cache_only', False):
+        print('Cache-only mode: Populating dataset cache without training')
+        # Use a minimal trainer for cache-only mode
+        cache_trainer = Trainer(
+            max_epochs=1,  # Only one epoch to populate cache
+            accelerator=accelerator,
+            devices=1,
+            num_sanity_val_steps=0,
+            enable_progress_bar=args['enable_progress_bar'],
+            logger=False,  # No logging for cache-only mode
+        )
+        cache_trainer.fit(model=model)
+        print('Dataset cache populated successfully')
     else:
-        last_checkpoint = find_last_checkpoint(checkpoints_dir)
-        print(f'Training will be resumed from the latest checkpoint {last_checkpoint}')
+        trainer = Trainer(
+            max_epochs=args['n_epochs'],
+            logger=wandb_logger,
+            callbacks=[checkpoint_callback, frequent_checkpoint_callback],
+            accelerator=accelerator,
+            devices=1,
+            num_sanity_val_steps=0,
+            enable_progress_bar=args['enable_progress_bar'],
+        )
+        
+        if args['resume'] is None:
+            last_checkpoint = None
+        else:
+            last_checkpoint = find_last_checkpoint(checkpoints_dir)
+            print(f'Training will be resumed from the latest checkpoint {last_checkpoint}')
 
-    print('Start training')
-    trainer.fit(model=model, ckpt_path=last_checkpoint)
+        print('Start training')
+        trainer.fit(model=model, ckpt_path=last_checkpoint)
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description='RNA Design')
@@ -221,6 +236,7 @@ if __name__ == '__main__':
     p.add_argument('--bidirectional', type=eval, default=False, help='Bidirectional edges')
     p.add_argument('--activation', type=str, default='silu', help='Activation function')
     p.add_argument('--seed', type=int, default=42, help='Random seed')
+    p.add_argument('--cache_only', action='store_true', help='Only cache datasets without training')
     
 
     disable_rdkit_logging()

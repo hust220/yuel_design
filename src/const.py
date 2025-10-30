@@ -75,8 +75,8 @@ ALLOWED_ELEMENT_TYPES = [
 ]
 ELEMENT2IDX, IDX2ELEMENT, N_ELEMENT_TYPES = generate_mappings(ALLOWED_ELEMENT_TYPES)
 
-# Keep ALLOWED_ATOM_TYPES for backward compatibility
-ALLOWED_ATOM_TYPES = ['C', 'O', 'N', 'F', 'S', 'Cl', 'Br', 'I', 'P']
+# Keep ALLOWED_ATOM_TYPES for backward compatibility (will be redefined below)
+ALLOWED_ATOM_TYPES_OLD = ['C', 'O', 'N', 'F', 'S', 'Cl', 'Br', 'I', 'P']
 ALLOWED_RESIDUE_TYPES = [
     # Standard amino acids
     'ALA', 'ARG', 'ASN', 'ASP', 'CYS',
@@ -94,8 +94,16 @@ ALLOWED_RESIDUE_TYPES = [
     'HEM', 'FAD', 'NAD', 'ATP', 'GTP', 
     # 'HOH', 'ZN', 'MG', 'CA', 'FE'
 ]
-ATOM2IDX, IDX2ATOM, N_ATOM_TYPES = generate_mappings(ALLOWED_ATOM_TYPES)
 RESIDUE2IDX, IDX2RESIDUE, N_RESIDUE_TYPES = generate_mappings(ALLOWED_RESIDUE_TYPES)
+
+# Define unified atom types for coarse-grained representation
+# Protein atoms: CA + 20 standard amino acid side chains + X_SC for unknown
+protein_atoms = ['CA'] + [f'{aa}_SC' for aa in ALLOWED_RESIDUE_TYPES if len(aa) == 3] + ['X_SC']
+# Ligand elements: common elements from ALLOWED_ELEMENT_TYPES + X for unknown
+ligand_elements = ['X'] + [e for e in ALLOWED_ELEMENT_TYPES if e != 'X']
+# Combined atom types
+ALLOWED_ATOM_TYPES = protein_atoms + ligand_elements
+ATOM2IDX, IDX2ATOM, N_ATOM_TYPES = generate_mappings(ALLOWED_ATOM_TYPES)
 
 # Flatten PROTEIN_ATOM_TYPES dictionary to list for mapping generation
 PROTEIN_ATOM_LIST = []

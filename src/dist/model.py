@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .evoformer import EvoformerStack, Linear
+from src.evoformer import EvoformerStack, Linear
 
 def add_time_step(t, x, node_mask):
     # t: (B)
@@ -80,7 +80,7 @@ def add_time_step(t, x, node_mask):
         raise ValueError(f"Unsupported input dimension: {x.dim()}")
 
 
-class D3PM(torch.nn.Module):
+class DistModel(torch.nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
 
@@ -135,7 +135,7 @@ class D3PM(torch.nn.Module):
             c_hidden_opm=kwargs.get('c_hidden_opm', 32),
             c_hidden_mul=kwargs.get('c_hidden_mul', 32),
             c_hidden_pair_att=kwargs.get('c_hidden_pair_att', 32),
-            c_s=kwargs.get('c_s', 384),
+            c_s=kwargs.get('c_s', 1),
             no_heads_seq=kwargs.get('no_heads_seq', 8),
             no_heads_pair=kwargs.get('no_heads_pair', 4),
             no_blocks=kwargs.get('no_blocks', 4),
@@ -149,8 +149,9 @@ class D3PM(torch.nn.Module):
         seq_input_dim = kwargs.get('seq_input_dim', 32) + 1  # +1 for time step
         self.embed_seq = nn.Linear(seq_input_dim, kwargs.get('c_m', 64))
         
-        # Embed z from [N, N, 4 + num_classes + 1] to [N, N, c_z]
-        z_input_dim = kwargs.get('z_input_dim', 4) + self.num_classes + 1  # +num_classes for one-hot dist +1 for time step
+        # Persist bb_dist bins and embed z from [N, N, 1 + bb_dist_bins + 1 + num_classes] to [N, N, c_z]
+        self.bb_dist_bins = kwargs.get('bb_dist_bins', 13)
+        z_input_dim = kwargs.get('z_input_dim', 1) + self.bb_dist_bins + 1 + self.num_classes  # +num_classes for one-hot dist +1 for time step
         self.embed_z = nn.Linear(z_input_dim, kwargs.get('c_z', 64))
         
         # Predict distogram logits from pair embedding z
@@ -159,7 +160,8 @@ class D3PM(torch.nn.Module):
     def forward(self, data, training=None):
         """Forward pass for training using D3PM discrete diffusion on DistAttDataset"""
         seq = data['seq']  # [B, N, C_m] - positional encoding
-        z = data['z']      # [B, N, N, 4] - residue relationship matrix
+        z = data['z']      # [B, N, N, 1] - residue relationship matrix
+        bb_dist = data['bb_dist'] # [B, N, N, 1] - backbone distance classes
         seq_mask = data['seq_mask']
         pair_mask = data['pair_mask']
         dist_target = data['dist']  # [B, N, N] - target distance classes
@@ -178,7 +180,7 @@ class D3PM(torch.nn.Module):
         )
         
         # Predict clean data from noisy data
-        predicted_x0_logits = self.model_predict(x_t, t, seq, z, seq_mask, pair_mask)
+        predicted_x0_logits = self.model_predict(x_t, t, seq, z, bb_dist, seq_mask, pair_mask)
         
         # Apply pair mask to loss computation
         pair_mask_flat = pair_mask.flatten(start_dim=1)  # (B, N*N)
@@ -205,7 +207,8 @@ class D3PM(torch.nn.Module):
             assert keep_frames <= self.n_T
             
         seq = data['seq']  # [B, N, C_m] - positional encoding
-        z = data['z']      # [B, N, N, 4] - residue relationship matrix
+        z = data['z']      # [B, N, N, 1] - residue relationship matrix
+        bb_dist = data['bb_dist'] # [B, N, N, 1] - backbone distance classes
         seq_mask = data['seq_mask']
         pair_mask = data['pair_mask']
         
@@ -227,7 +230,7 @@ class D3PM(torch.nn.Module):
             noise = torch.rand((n_samples, n * n, self.num_classes), device=x.device)
             
             # Sample one step back
-            x = self.p_sample(x, t_tensor, seq, z, seq_mask, pair_mask, noise)
+            x = self.p_sample(x, t_tensor, seq, z, bb_dist, seq_mask, pair_mask, noise)
 
             chain.append(x)
             
@@ -401,7 +404,7 @@ class D3PM(torch.nn.Module):
         gumbel_noise = -torch.log(-torch.log(noise))
         return torch.argmax(logits + gumbel_noise, dim=-1)
 
-    def model_predict(self, x_t_classes, t, seq, z, seq_mask, pair_mask):
+    def model_predict(self, x_t_classes, t, seq, z, bb_dist, seq_mask, pair_mask):
         """
         Predict clean data x_0 from noisy data x_t using Evoformer.
         
@@ -409,7 +412,8 @@ class D3PM(torch.nn.Module):
             x_t_classes: Noisy discrete data (B, N*N) - discrete class indices
             t: Current timestep
             seq: Sequence features [B, N, C_m]
-            z: Pair features [B, N, N, 4]
+            z: Pair features [B, N, N, 1]
+            bb_dist: Backbone distance features [B, N, N, 1]
             seq_mask: Sequence mask [B, N]
             pair_mask: Pair mask [B, N, N]
         
@@ -422,17 +426,21 @@ class D3PM(torch.nn.Module):
         x_t_reshaped = x_t_classes.view(b, n, n)
         
         # Add time step to sequence features
-        seq_with_time = add_time_step(t, seq, seq_mask)
+        seq_with_time = add_time_step(t, seq, seq_mask) # [B, N, C_m + 1]
         
         # Convert noisy dist to one-hot and concatenate with z
         x_t_onehot = torch.nn.functional.one_hot(x_t_reshaped, num_classes=self.num_classes).float()
         # x_t_onehot: [B, N, N, num_classes]
+
+        # bb_dist: [B, N, N, 1] where 0 denotes invalid, 1..(bb_dist_bins-1) valid bins
+        bb_idx = bb_dist.squeeze(-1).long()  # [B, N, N]
+        bb_dist_onehot = torch.nn.functional.one_hot(bb_idx, num_classes=self.bb_dist_bins).float()
         
         # Concatenate z with one-hot dist
-        z_with_dist = torch.cat([z, x_t_onehot], dim=-1)  # [B, N, N, 4 + num_classes]
+        z_with_dist = torch.cat([z, bb_dist_onehot, x_t_onehot], dim=-1)  # [B, N, N, 1 + num_classes + 1 + num_classes]
         
         # Add time step to pair features
-        z_with_time = add_time_step(t, z_with_dist, pair_mask)
+        z_with_time = add_time_step(t, z_with_dist, pair_mask) # [B, N, N, 1 + num_classes + 1 + num_classes + 1]
         
         # Embed seq and z
         seq_embedded = self.embed_seq(seq_with_time)

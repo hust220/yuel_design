@@ -9,6 +9,52 @@ import requests
 import tempfile
 from io import StringIO
 
+def pdb_line(
+    *,
+    record: str = 'ATOM',
+    serial: int,
+    atom_name: str,
+    res_name: str,
+    chain_id: str,
+    res_seq: int,
+    x: float,
+    y: float,
+    z: float,
+    occupancy: float = 1.00,
+    temp_factor: float = 0.00,
+    element: str = '',
+    charge: str = '',
+    alt_loc: str = ' ',
+    insertion: str = ' ',
+) -> str:
+    """Format a single PDB ATOM/HETATM line according to PDB fixed-width columns.
+
+    This follows the PDB v3.3 formatting with standard columns and widths.
+    """
+    record_f = f"{record:<6}"
+    serial_f = f"{serial:>5d}"
+    # Atom name is left-justified in 4 chars; if 1-2 chars, keep as-is
+    atom_name_f = f"{atom_name:<4}"[:4]
+    alt_loc_f = f"{alt_loc:1s}"[0]
+    res_name_f = f"{res_name:>3s}"[-3:]
+    chain_id_f = f"{chain_id:1s}"[0]
+    res_seq_f = f"{res_seq:>4d}"
+    insertion_f = f"{insertion:1s}"[0]
+    x_f = f"{x:>8.3f}"
+    y_f = f"{y:>8.3f}"
+    z_f = f"{z:>8.3f}"
+    occupancy_f = f"{occupancy:>6.2f}"
+    temp_factor_f = f"{temp_factor:>6.2f}"
+    element_f = f"{element:>2s}"[-2:]
+    charge_f = f"{charge:>2s}"[-2:]
+
+    return (
+        f"{record_f}{serial_f} {atom_name_f}{alt_loc_f}{res_name_f} "
+        f"{chain_id_f}{res_seq_f}{insertion_f}   {x_f}{y_f}{z_f}{occupancy_f}{temp_factor_f}"
+        f"          {element_f}{charge_f}\n"
+    )
+
+
 def three_to_one_letter(res_name: str) -> str:
     """Convert three-letter amino acid code to one-letter code.
     

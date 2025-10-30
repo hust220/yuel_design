@@ -320,13 +320,13 @@ class EGNN(nn.Module):
             for i in range(0, self.n_layers):
                 layer = self._modules["e_block_%d" % i]
                 if self.use_checkpoint and i % 2 == 0 and i < self.n_layers - 1:
-                    h, x = checkpoint(checkpoint_wrapper, layer, h, x, edge_index, edge_attr, node_mask, edge_mask)
+                    h, x = checkpoint(checkpoint_wrapper, layer, h, x, edge_index, edge_attr, node_mask, edge_mask, use_reentrant=False)
                 else:
                     h, x = layer(h, x, edge_index, edge_attr, node_mask=node_mask, edge_mask=edge_mask)
             return h, x
 
         if self.low_memory:
-            h, x = checkpoint(blocks_wrapper, h, x, edge_index, edge_attr, node_mask, edge_mask)
+            h, x = checkpoint(blocks_wrapper, h, x, edge_index, edge_attr, node_mask, edge_mask, use_reentrant=False)
         else:
             h, x = blocks_wrapper(h, x, edge_index, edge_attr, node_mask, edge_mask)
 

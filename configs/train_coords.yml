@@ -13,9 +13,9 @@ batch_size: 2
 n_epochs: 1000
 test_epochs: 20
 n_stability_samples: 5
-num_workers: 16
+num_workers: 8
 save_every_n_steps: 1000  # Save checkpoint every 1000 training steps
-cache_mode: memory
+cache_mode: file
 cache_dir: cache
 
 # EDM parameters

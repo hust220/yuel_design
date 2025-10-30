@@ -1,9 +1,92 @@
 import sys
 import random
+import os
+import glob
+import re
 from datetime import datetime
+from src.lightning1 import LightningWrapper
+from pytorch_lightning.loggers import WandbLogger
+import wandb
 
 import torch
 import numpy as np
+
+
+def move_data_to_device(data, device):
+    """
+    Move data from CPU to target device if needed.
+    This function is device-agnostic and supports CUDA, MPS, and CPU devices.
+    
+    Args:
+        data: Dictionary containing tensors and other data
+        device: Target device (torch.device)
+    
+    Returns:
+        Dictionary with tensors moved to target device
+    """
+    if device.type == 'cpu' or data is None:
+        return data
+    
+    # Check if data contains tensors on CPU and move them to target device
+    moved_data = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
+                non_blocking = device.type == 'cuda'
+                moved_data[key] = value.to(device, non_blocking=non_blocking)
+            else:
+                moved_data[key] = value
+        return moved_data
+
+    # Fallback: return as-is
+    return data
+
+
+def pick_latest(patterns, exclude=None):
+    """Find the latest checkpoint file matching the given patterns, excluding specified patterns."""
+    files = []
+    for p in patterns:
+        files.extend(glob.glob(p))
+    if exclude:
+        files = [f for f in files if not any(x in f for x in exclude)]
+    if not files:
+        raise FileNotFoundError('No matching checkpoint found')
+    def parse_info(filepath):
+        name = os.path.basename(filepath)
+        # Extract timestamp from filename like: date01-10_time12-09-56.120775
+        tm = re.search(r"date(\d{2})-(\d{2})_time(\d{2})-(\d{2})-(\d{2})(?:\.(\d+))?", name)
+        em = re.search(r"epoch=(\d+)", name)
+        epoch = int(em.group(1)) if em else -1
+        if tm:
+            day = int(tm.group(1))
+            month = int(tm.group(2))
+            hour = int(tm.group(3))
+            minute = int(tm.group(4))
+            second = int(tm.group(5))
+            microsecond = int((tm.group(6) or '0')[:6].ljust(6, '0'))
+            # Use file's mtime year to avoid year-boundary ambiguity
+            year = datetime.fromtimestamp(os.path.getmtime(filepath)).year
+            try:
+                dt = datetime(year, month, day, hour, minute, second, microsecond)
+            except ValueError:
+                dt = None
+        else:
+            dt = None
+        return dt, epoch
+
+    infos = [(f, *parse_info(f)) for f in files]
+    with_dt = [it for it in infos if it[1] is not None]
+
+    if with_dt:
+        # Prefer latest timestamp, then highest epoch, then filename for determinism
+        return max(with_dt, key=lambda it: (it[1], it[2], it[0]))[0]
+
+    with_epoch = [it for it in infos if it[2] >= 0]
+    if with_epoch:
+        return max(with_epoch, key=lambda it: (it[2], it[0]))[0]
+
+    # Fallback to modification time if neither timestamp nor epoch found
+    return max(files, key=os.path.getmtime)
 
 class Logger(object):
     def __init__(self, logpath, syspart=sys.stdout):
@@ -358,3 +441,212 @@ def random_rotation(x):
         raise Exception("Not implemented Error")
 
     return x.contiguous()
+
+
+def init_wandb(args, experiment, project, wandb_api_key_file="wandb_api_key.txt"):
+    """
+    Initialize wandb logger with API key from file.
+    
+    Args:
+        args: Dictionary containing wandb configuration
+        experiment: Experiment name/ID
+        project: Wandb project name
+        wandb_api_key_file: Path to file containing wandb API key (default: "wandb_api_key.txt")
+    
+    Returns:
+        WandbLogger instance
+    """
+    # Login to wandb using API key from file
+    if os.path.exists(wandb_api_key_file):
+        try:
+            with open(wandb_api_key_file, 'r') as f:
+                api_key = f.read().strip()
+            os.environ['WANDB_API_KEY'] = api_key
+            wandb.login(key=api_key, relogin=True)
+            print("Successfully logged in to wandb")
+        except Exception as e:
+            print(f"Warning: Failed to login to wandb: {e}")
+    else:
+        print(f"Warning: {wandb_api_key_file} not found. Please ensure wandb is logged in manually.")
+    
+    wandb_logger = WandbLogger(
+        save_dir=args['logs'],
+        project=project,
+        name=experiment,
+        id=experiment,
+        resume='must' if args['resume'] is not None else 'allow',
+        entity=args['wandb_entity'],
+    )
+    
+    return wandb_logger
+
+
+def find_latest_checkpoint(checkpoints_dir):
+    """
+    Find the latest checkpoint file in the given directory.
+    
+    Priority order:
+    1. last.ckpt
+    2. epoch=XX.ckpt (max epoch)
+    3. step=XX.ckpt (max step)
+    4. Any .ckpt file (by modification time)
+    
+    Args:
+        checkpoints_dir: Directory containing checkpoint files
+    
+    Returns:
+        str: Path to the latest checkpoint file
+    
+    Raises:
+        FileNotFoundError: If no checkpoint files are found
+    """
+    import re
+    
+    # First, try to find last.ckpt
+    last_ckpt = os.path.join(checkpoints_dir, 'last.ckpt')
+    if os.path.exists(last_ckpt):
+        return last_ckpt
+    
+    # If not found, look for epoch=XX.ckpt files and find the one with max epoch
+    epoch_files = []
+    for fname in os.listdir(checkpoints_dir):
+        if fname.endswith('.ckpt'):
+            epoch_match = re.search(r'epoch=(\d+)', fname)
+            if epoch_match:
+                epoch = int(epoch_match.group(1))
+                epoch_files.append((epoch, fname))
+    
+    if epoch_files:
+        latest_epoch_file = max(epoch_files, key=lambda t: t[0])[1]
+        return os.path.join(checkpoints_dir, latest_epoch_file)
+    
+    # If no epoch files found, look for step=XX.ckpt files and find max step
+    step_files = []
+    for fname in os.listdir(checkpoints_dir):
+        if fname.endswith('.ckpt'):
+            step_match = re.search(r'step=(\d+)', fname)
+            if step_match:
+                step = int(step_match.group(1))
+                step_files.append((step, fname))
+    
+    if step_files:
+        latest_step_file = max(step_files, key=lambda t: t[0])[1]
+        return os.path.join(checkpoints_dir, latest_step_file)
+    
+    # Fallback: return any .ckpt file (by modification time)
+    ckpt_files = [f for f in os.listdir(checkpoints_dir) if f.endswith('.ckpt')]
+    if ckpt_files:
+        latest_file = max(ckpt_files, key=lambda f: os.path.getmtime(os.path.join(checkpoints_dir, f)))
+        return os.path.join(checkpoints_dir, latest_file)
+    
+    raise FileNotFoundError(f'No checkpoint files found in {checkpoints_dir}')
+
+
+def run_training(args=None, model=None, dataset=None, config=None):
+    """
+    Run the complete training pipeline.
+    
+    Args:
+        args: Dictionary containing training configuration (optional if config provided)
+        model: The model class to train (e.g., C4Opt)
+        dataset: The dataset class (e.g., C4OptDataset) (optional if args provided)
+        config: The config module (e.g., src.c4_opt.config) (optional if args provided)
+    """
+    import multiprocessing
+    from pytorch_lightning import Trainer, callbacks
+    
+    # Handle configuration loading if config is provided
+    if config is not None and args is None:
+        # Convert config to args dictionary
+        args = {}
+        for attr_name in dir(config):
+            if not attr_name.startswith('_'):
+                args[attr_name] = getattr(config, attr_name)
+        
+        args['dataset_class'] = dataset
+        
+    # Disable rdkit logging
+    disable_rdkit_logging()
+
+    # Set multiprocessing start method to 'spawn' for CUDA compatibility
+    multiprocessing.set_start_method('spawn', force=True)
+    
+    # Setup experiment directories, logging, and wandb
+    start_time = datetime.now().strftime('date%d-%m_time%H-%M-%S.%f')
+    run_name = f'{args["exp_name"]}_bs{args["batch_size"]}_{start_time}'
+    experiment = run_name if args["resume"] is None else args["resume"]
+    checkpoints_dir = os.path.join(args["checkpoints"], experiment)
+    
+    print(f'Checkpoints directory: {checkpoints_dir}')
+    
+    # Create directories
+    os.makedirs(os.path.join(args["logs"], "general_logs", experiment), exist_ok=True)
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(args["logs"], exist_ok=True)
+    
+    # Setup logging
+    sys.stdout = Logger(logpath=os.path.join(args["logs"], "general_logs", experiment, f'log.log'), syspart=sys.stdout)
+    sys.stderr = Logger(logpath=os.path.join(args["logs"], "general_logs", experiment, f'log.log'), syspart=sys.stderr)
+    
+    # Initialize wandb
+    wandb_logger = init_wandb(args, experiment, args['project'])
+
+    set_deterministic(args["seed"])
+    device = args["device"]
+    args['device'] = torch.device(device)
+    
+    # Create model with wrapper
+    model = LightningWrapper(model_class=model, **args)
+
+    checkpoint_callback = callbacks.ModelCheckpoint(
+        dirpath=checkpoints_dir,
+        filename=experiment + '_{epoch:02d}',
+        monitor='loss/val',
+        save_top_k=-1,
+        every_n_epochs=1,
+        save_last=True,
+    )
+
+    # Optional frequent checkpointing (every N train steps)
+    callbacks_list = [checkpoint_callback]
+    save_every_n_steps = args.get('save_every_n_steps')
+    if save_every_n_steps is not None and int(save_every_n_steps) > 0:
+        frequent_checkpoint_callback = callbacks.ModelCheckpoint(
+            dirpath=checkpoints_dir,
+            filename=experiment + '_iter_{step:06d}',
+            every_n_train_steps=int(save_every_n_steps),
+            monitor='loss/train',
+            save_top_k=3,
+            save_last=True,
+        )
+        callbacks_list.append(frequent_checkpoint_callback)
+
+    # Smart device detection for different platforms
+    if device == 'cuda':
+        accelerator = 'gpu'
+    elif device == 'mps':
+        accelerator = 'mps'  # Mac MPS support
+    else:
+        accelerator = 'cpu'
+
+    print("Device: ", device, "Accelerator: ", accelerator)
+    
+    trainer = Trainer(
+        max_epochs=args['n_epochs'],
+        logger=wandb_logger,
+        callbacks=callbacks_list,
+        accelerator=accelerator,
+        devices=1,
+        num_sanity_val_steps=0,
+        enable_progress_bar=args['enable_progress_bar'],
+        # precision='16-mixed',  # Enable automatic mixed precision training
+    )
+
+    if args['resume'] is None:
+        last_checkpoint = None
+    else:
+        last_checkpoint = find_latest_checkpoint(checkpoints_dir)
+        print(f'Training will be resumed from the latest checkpoint {last_checkpoint}')
+
+    print('Start training model')
+    trainer.fit(model=model, ckpt_path=last_checkpoint)

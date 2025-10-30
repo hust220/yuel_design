@@ -37,5 +37,5 @@ forward_type: uniform
 hybrid_loss_coeff: 0.0
 
 # Dataset parameters
-cache_mode: memory
+cache_mode: file
 cache_dir: cache

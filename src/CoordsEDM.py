@@ -11,6 +11,29 @@ from .egnn import EGNN
 from .noise import GammaNetwork, PredefinedNoiseSchedule
 
 
+def remove_center(x, node_mask, anchor_mask):
+    """
+    Remove center of mass for single graph (no batch dimension).
+    
+    Args:
+        x: Coordinates tensor [N, 3]
+        node_mask: Node mask [N]
+        anchor_mask: Anchor mask [N]
+    
+    Returns:
+        tuple: (processed_x, mean_pos)
+    """
+    x_masked = x * anchor_mask[:, None]
+    N = anchor_mask.sum()
+    if N > 0:
+        mean_pos = x_masked.sum(dim=0) / N  # [3]
+    else:
+        # If no anchor atoms, use center of all atoms
+        mean_pos = x.sum(dim=0) / x.shape[0]  # [3]
+    x = x - mean_pos[None, :] * node_mask[:, None]
+    return x, mean_pos
+
+
 def expand_to_nodes(array, target):
     """
     Expands the array to match the target's node dimension.
@@ -144,12 +167,17 @@ class EDM(torch.nn.Module):
 
         free_mask = 1.0 - graph.ndata['anchor_mask']
 
+        # Combine edge_dist and edge_residue into edge_attr for EGNN
+        edge_dist_one_hot = torch.nn.functional.one_hot(graph.edata['edge_dist'], num_classes=12).float()
+        edge_residue_one_hot = torch.nn.functional.one_hot(graph.edata['edge_residue'], num_classes=3).float()
+        edge_attr = torch.cat([edge_dist_one_hot, edge_residue_one_hot], dim=1)
+        
         # Neural net prediction
         h_out, x_out = self.egnn.forward(
             h=z[:, self.n_dims:],  # features only (after coordinates)
             x=z[:, :self.n_dims],  # positions
             edge_index=graph.edge_index,  # Use custom graph edge_index directly
-            edge_attr=graph.edata['edge_attr'],
+            edge_attr=edge_attr,
             node_attr=node_attr_with_time,  # node_attr with time step added
             node_mask=graph.ndata['node_mask'],
             free_mask=free_mask,
@@ -168,20 +196,7 @@ class EDM(torch.nn.Module):
         free_mask = 1.0 - graph.ndata['anchor_mask']
 
         # Remove center of mass from protein atoms (anchor_mask)
-        # x: [N, 3], anchor_mask: [N], node_mask: [N]
-        com_mask = graph.ndata['anchor_mask']  # anchor atoms
-        N = com_mask.sum()  # number of anchor atoms
-        if N < 1e-5:
-            mean_pos = torch.zeros(3, device=x.device)
-        else:
-            # Calculate center of mass: sum(x * mask) / sum(mask)
-            # x: [N, 3], com_mask: [N] -> x_masked: [N, 3]
-            x_masked = x * com_mask[:, None]  # [N, 3] * [N, 1] -> [N, 3]
-            mean_pos = x_masked.sum(dim=0) / N  # [3]
-        
-        # Subtract center of mass from all atoms
-        # x: [N, 3], mean_pos: [3], node_mask: [N] -> [N, 3]
-        x = x - mean_pos[None, :]
+        x, mean_pos = remove_center(x, graph.ndata['node_mask'], graph.ndata['anchor_mask'])
         x = x * self.coord_scale_factor
 
         if training and self.data_augmentation:
@@ -225,7 +240,8 @@ class EDM(torch.nn.Module):
         x = graph.ndata['positions']
         h = graph.ndata['one_hot']
 
-        x, mean_pos = utils.remove_partial_mean_with_mask(x, graph.ndata['node_mask'], anchor_mask)
+        # Remove center of mass
+        x, mean_pos = remove_center(x, graph.ndata['node_mask'], anchor_mask)
 
         x = x * self.coord_scale_factor
 
@@ -240,7 +256,7 @@ class EDM(torch.nn.Module):
             keep_frames = self.T
         else:
             assert keep_frames <= self.T
-        chain = torch.zeros((keep_frames,) + z.size(), device=z.device)
+        chain = []
 
         # Sample p(z_s | z_t) - treat as single graph
         for s_step in reversed(range(0, self.T)):
@@ -262,22 +278,22 @@ class EDM(torch.nn.Module):
             if anchor_mask.sum() < 1e-5:
                 z = z - z.mean(dim=0, keepdim=True)
 
-            write_index = (s_step * keep_frames) // self.T
-            chain[write_index] = z
+            chain.append(z)
 
         # Finally sample p(x, h | z_0)
         gamma_0 = expand_to_nodes(self.gamma(torch.zeros(1, device=z.device)), x)
         alpha_0 = alpha(gamma_0, x)
-        z = alpha_0 * xh * anchor_mask + z * free_mask
+        # Ensure proper broadcasting: alpha_0 [N, 1], xh [N, F], anchor_mask [N]
+        z = alpha_0 * xh * anchor_mask[:, None] + z * free_mask[:, None]
 
         x, h = self.sample_p_xh_given_z0(z, graph)
-        chain[0] = torch.cat([x, h], dim=1)  # Use dim=1 for flattened data [N, F]
+        chain.append(torch.cat([x, h], dim=1))  # Use dim=1 for flattened data [N, F]
 
-        # For flattened data, chain shape is [T_keep, N, F], so use 3 indices
+        chain = torch.stack(chain, dim=0)
         chain[:, :, :3] = chain[:, :, :3] / self.coord_scale_factor
         chain[:, :, :3] = chain[:, :, :3] + mean_pos
 
-        return chain
+        return chain[-1], chain
 
     def sample_p_zs_given_zt(self, s, t, z_t, graph):
         """Samples from zs ~ p(zs | zt). Only used during sampling. Samples only linker features and coords"""
@@ -294,14 +310,19 @@ class EDM(torch.nn.Module):
         eps_hat = eps_hat * free_mask[:, None]  # [N, F] * [N, 1] for proper broadcasting
 
         # Compute mu for p(z_s | z_t)
-        mu = z_t / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat
+        alpha_t_given_s = alpha_t_given_s[:, None]  
+        sigma2_t_given_s = sigma2_t_given_s[:, None]
+        mu = z_t / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat # [N, F]
 
         # Compute sigma for p(z_s | z_t)
-        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t
+        # sigma_t_given_s: [N], sigma_s: [N, 1], sigma_t: [N, 1]
+        sigma_t_given_s = sigma_t_given_s[:, None]  # [N] -> [N, 1] for broadcasting
+        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t # [N, 1]
 
         # Sample z_s given the parameters derived from zt
-        eps = torch.randn_like(mu) * free_mask[:, None]
-        z_s = mu + sigma_sampling * eps
+        eps = torch.randn_like(mu) * free_mask[:, None] # [N, F]
+        # eps: [N, F], sigma_sampling: [N, F], mu: [N, F]
+        z_s = mu + sigma_sampling * eps # [N, F]
         # z_s = z_t * anchor_mask + z_s * free_mask 
 
         return z_s
