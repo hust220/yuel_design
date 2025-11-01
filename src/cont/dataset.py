@@ -18,17 +18,67 @@ STANDARD_AMINO_ACIDS = [
     'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
     'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL'
 ]
-protein_atoms = ['CA'] + [f'{aa}_SC' for aa in STANDARD_AMINO_ACIDS]  # Includes GLY_SC
+protein_cg_atoms = [f'{aa}_SC' for aa in STANDARD_AMINO_ACIDS]  # Includes GLY_SC
 
-# Ligand elements: common elements
-ligand_elements = ['C', 'O', 'N', 'F', 'S', 'P', 'Cl', 'Br', 'I',
-                   'ZN', 'MG', 'FE', 'CU', 'MN', 'CO', 'NI', 'MO', 'W', 'SE']
+ALL_PROTEIN_ATOM_TYPES = {
+    # Carbon atoms
+    'C': [
+        # Standard backbone and side chain
+        'CA', 'CB', 'CG', 'CD', 'CE', 'CZ', 'CH', 'CH1', 'CH2', 'CH3',
+        # Aromatic rings
+        'CE1', 'CE2', 'CE3', 'CD1', 'CD2', 'CD3', 'CG1', 'CG2', 'CG3',
+        # Modified carbon atoms
+        'CM', 'CM1', 'CM2', 'CM3', 'CA1', 'CA2', 'CA3',
+        # Nucleic acid carbons
+        'C1\'', 'C2\'', 'C3\'', 'C4\'', 'C5\'', 'C2', 'C4', 'C5', 'C6', 'C8',
+    ],
+    
+    # Nitrogen atoms
+    'N': [
+        # Standard backbone and side chain
+        'N', 'ND1', 'ND2', 'NE', 'NE1', 'NE2', 'NH1', 'NH2', 'NZ',
+        # Nucleic acid nitrogens
+        'N1', 'N2', 'N3', 'N6', 'N7', 'N9',
+    ],
+    
+    # Oxygen atoms
+    'O': [
+        # Standard backbone and side chain
+        'O', 'OXT', 'OD1', 'OD2', 'OE1', 'OE2', 'OG', 'OG1', 'OG2', 'OH',
+        # Modified oxygen atoms
+        'OH1', 'OH2',
+        # Nucleic acid oxygens
+        'O2\'', 'O3\'', 'O4\'', 'O5\'', 'O2P', 'O3P', 'O1P', 'O2', 'O4', 'O6',
+    ],
+    
+    # Phosphorus atoms
+    'P': [
+        # Phosphorylation and nucleic acid phosphates
+        'P', 'OP1', 'OP2', 'OP3',
+    ],
+    
+    # Sulfur atoms
+    'S': [
+        # Standard sulfur atoms
+        'SG', 'SD',
+    ],
+}
 
-# Combined atom types
-ALLOWED_ATOM_TYPES = ['X'] + protein_atoms + ligand_elements
+protein_aa_atoms = [atom for atoms in ALL_PROTEIN_ATOM_TYPES.values() for atom in atoms]
 
-# Create mapping
+# Ligand elements: common elements (prefixed with _ to avoid conflict with protein atoms)
+ligand_elements = ['_C', '_O', '_N', '_F', '_S', '_P', '_Cl', '_Br', '_I',
+                   '_ZN', '_MG', '_FE', '_CU', '_MN', '_CO', '_NI', '_MO', '_W', '_SE']
+
+# Ligand bond types: no_bond, single, double, triple, aromatic
+LIGAND_BOND_TYPES = ['NO_BOND', 'SINGLE', 'DOUBLE', 'TRIPLE', 'AROMATIC']
+
+# Combined atom types: CG atoms + all protein atoms + ligand elements
+ALLOWED_ATOM_TYPES = ['X'] + protein_cg_atoms + protein_aa_atoms + ligand_elements
+
+# Create mappings
 ATOM2IDX = {atom: idx for idx, atom in enumerate(ALLOWED_ATOM_TYPES)}
+LIGAND_BOND_TYPE2IDX = {bond_type: idx for idx, bond_type in enumerate(LIGAND_BOND_TYPES)}
 
 def get_one_hot(atom, atoms_dict):
     """Get one-hot encoding for atom."""
@@ -45,10 +95,22 @@ def get_atom_one_hot(atom_name):
     else:
         return get_one_hot('X', ATOM2IDX)
 
+def get_ligand_bond_type(bond_type):
+    """Get ligand bond type index from RDKit bond type."""
+    if bond_type == Chem.BondType.SINGLE:
+        return LIGAND_BOND_TYPE2IDX['SINGLE']
+    elif bond_type == Chem.BondType.DOUBLE:
+        return LIGAND_BOND_TYPE2IDX['DOUBLE']
+    elif bond_type == Chem.BondType.TRIPLE:
+        return LIGAND_BOND_TYPE2IDX['TRIPLE']
+    elif bond_type == Chem.BondType.AROMATIC:
+        return LIGAND_BOND_TYPE2IDX['AROMATIC']
+    return LIGAND_BOND_TYPE2IDX['SINGLE']
+
 # def parse_structure_and_ligand(pocket_pdb, ligand_size, mask_ligand=True):
 def parse_pocket(structure):
-    """Parse protein structure using coarse-grained representation.
-    Each residue is simplified to two atoms: CA (backbone) and side chain center.
+    """Parse protein structure including all atoms plus coarse-grained side chain centers.
+    For each residue, stores all non-hydrogen atoms plus the side chain center.
     Only supports protein residues, does not handle RNA/DNA."""
     
     coords, mol_types, codes, atom_names, res_ids, res_names = [], [], [], [], [], []
@@ -77,17 +139,25 @@ def parse_pocket(structure):
                 
                 # Only process protein residues (with CA atom)
                 if ca_coord is not None:
-                    # Add CA atom
-                    coords.append(ca_coord)
-                    atom_names.append('CA')
-                    res_ids.append(ires)
-                    res_names.append(res_name)
-                    codes.append(get_atom_one_hot('CA'))
-                    mol_types.append([1, 0, 0])  # backbone 
+                    # Add all atoms for this residue
+                    for atom_name, coord in residue_atoms:
+                        coords.append(coord)
+                        atom_names.append(atom_name)
+                        res_ids.append(ires)
+                        res_names.append(res_name)
+                        codes.append(get_atom_one_hot(atom_name))
+                        
+                        # Determine mol_type: backbone or side chain
+                        if atom_name in ['N', 'CA', 'C', 'O', 'OXT']:
+                            # Backbone atoms
+                            mol_types.append([1, 0, 0])
+                        else:
+                            # Side chain atoms
+                            mol_types.append([0, 1, 0])
                     
                     # Calculate side chain center (exclude backbone atoms: CA, N, C, O)
                     side_chain_atoms = [coord for name, coord in residue_atoms 
-                                        if name not in ['CA', 'N', 'C', 'O']]
+                                        if name not in ['CA', 'N', 'C', 'O', 'OXT']]
                     
                     if side_chain_atoms:
                         # Side chain center (all amino acids except glycine)
@@ -99,34 +169,27 @@ def parse_pocket(structure):
                         # Use specific side chain type if known, otherwise X
                         sc_type = f'{res_name}_SC'
                         codes.append(get_atom_one_hot(sc_type))
-                        mol_types.append([0, 1, 0])  # side chain
-                        
-                        # Store CA coordinate for backbone
+                        mol_types.append([0, 1, 0])  # side chain center
                     else:
                         # Glycine (GLY) has no side chain atoms
-                        # Option: Use CA's direction vector to place side chain
-                        # Get C and N atom positions for direction calculation
+                        # Use CA's direction vector to place side chain center
                         n_coord = next((coord for name, coord in residue_atoms if name == 'N'), None)
                         c_coord = next((coord for name, coord in residue_atoms if name == 'C'), None)
                         
                         if n_coord is not None and c_coord is not None:
                             # Create a small offset along the bisector of N-CA-C angle
-                            # This gives a reasonable position for the "missing" side chain
                             n_vec = n_coord - ca_coord
                             c_vec = c_coord - ca_coord
-                            # Average direction
                             avg_vec = (n_vec + c_vec) / 2
-                            # Normalize and scale by typical side chain length (1.5 Angstroms)
                             norm = np.linalg.norm(avg_vec)
                             if norm > 0:
                                 avg_vec = avg_vec / norm * 1.5
                                 sc_coord = ca_coord + avg_vec
                             else:
-                                # Avoid zero norm: use a small random offset
                                 avg_vec = np.array([1.0, 0.0, 0.0]) * 1.5
                                 sc_coord = ca_coord + avg_vec
                         else:
-                            # Fallback: use a small fixed offset to avoid overlap
+                            # Fallback: use a small fixed offset
                             sc_coord = ca_coord + np.array([1.5, 0.0, 0.0])
                         
                         coords.append(sc_coord)
@@ -134,7 +197,7 @@ def parse_pocket(structure):
                         res_ids.append(ires)
                         res_names.append(res_name)
                         codes.append(get_atom_one_hot('GLY_SC'))
-                        mol_types.append([0, 0, 1])  # side chain
+                        mol_types.append([0, 1, 0])  # side chain center
                     
                     ires += 1
                 # Skip residues without CA (not protein residues)
@@ -164,46 +227,97 @@ def create_dist_to_coords_features(pocket_pdb, ligand_mol):
         return None
 
     # Parse ligand molecule
-    ligand_atoms, ligand_coords = get_ligand_atoms_and_coords(mol)
+    ligand_atoms, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
     ligand_coords = np.array(ligand_coords)
     ligand_size = len(ligand_coords)
 
-    # Create distance matrix
-    dist_matrix = create_dist_matrix(pocket_info['coords'], ligand_coords, discretization_config='b12')
+    # Extract only CA, SC, and construct reduced coordinates for distance matrix
+    atom_names = pocket_info['atom_names']
+    ca_or_sc_coords = []
+    for idx, (coord, name) in enumerate(zip(pocket_info['coords'], atom_names)):
+        if name == 'CA' or name.endswith('_SC'):
+            ca_or_sc_coords.append(coord)
+    ca_or_sc_coords = np.array(ca_or_sc_coords)
+    
+    # Create distance matrix only for CA, SC, and ligand
+    dist_matrix = create_dist_matrix(ca_or_sc_coords, ligand_coords, discretization_config='b12')
 
-    features = init_dist_to_coords_features(pocket_info, ligand_size, dist_matrix)
+    features = init_dist_to_coords_features(pocket_info, ligand_size, dist_matrix, ligand_bond_matrix, ligand_atoms)
     features['x'] = np.concatenate([pocket_info['coords'], ligand_coords], axis=0)
     # features['atom_type'] = np.array(list(pocket_info['codes']) + [get_atom_one_hot(atom) for atom in ligand_atoms])
 
     return features
 
-def init_dist_to_coords_features(pocket_info, ligand_size, dist_matrix):
+def init_dist_to_coords_features(pocket_info, ligand_size, dist_matrix, ligand_bond_matrix, ligand_atoms):
     receptor_coords = np.array(pocket_info['coords'])
     mol_types = pocket_info['mol_types']
     codes = pocket_info['codes']
     receptor_residues = pocket_info['res_ids']
+    atom_names = pocket_info['atom_names']
 
-    node_attr = build_nodes(mol_types, codes, ligand_size)
-    edge_index, edge_dist, edge_attr = build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues)
+    # Create ligand bonds matrix for all atoms
+    protein_size = len(receptor_coords)
+    ligand_bonds = np.zeros((protein_size + ligand_size, protein_size + ligand_size), dtype=np.int64)
+    ligand_bonds[protein_size:, protein_size:] = ligand_bond_matrix
+    
+    node_attr = build_nodes(mol_types, codes, ligand_atoms)
+    edge_index, edge_dist, edge_attr, edge_bonds = build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues, atom_names, ligand_bonds)
     
     features = {
         'h': node_attr,
         'edge_index': edge_index,
         'edge_dist': edge_dist,
         'edge_attr': edge_attr,
+        'ligand_bonds': edge_bonds,
     }
     
     return features
 
-def build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues):
-    """Build graph edges from coordinates and distance matrix.
-    Creates a fully connected graph with residue relationship features.
+def expand_dist_matrix(dist_matrix, receptor_coords, ligand_size, atom_names):
+    """Expand reduced distance matrix (CA, SC, ligand only) to full node set.
+    
+    dist_matrix has shape (n_ca_sc + n_ligand, n_ca_sc + n_ligand)
+    Returns full matrix with shape (n_receptor + n_ligand, n_receptor + n_ligand)
+    where distances for CA/SC/ligand pairs are dist_matrix[i,j] + 1, others are 0.
     """
     n = len(receptor_coords) + ligand_size
-    edge_list, edge_dist, edge_attr = [], [], []
+    full_dist_matrix = np.zeros((n, n), dtype=np.int64)
+    
+    # Create mapping from full node index to reduced index in dist_matrix
+    # Same order as used in create_dist_to_coords_features
+    full_to_reduced = {}
+    reduced_idx = 0
+    for idx, name in enumerate(atom_names):
+        if name == 'CA' or name.endswith('_SC'):
+            full_to_reduced[idx] = reduced_idx
+            reduced_idx += 1
+    # Add ligand indices in order
+    for idx in range(len(receptor_coords), n):
+        full_to_reduced[idx] = reduced_idx
+        reduced_idx += 1
+    
+    # Fill full matrix with reduced distances + 1 for CA/SC/ligand pairs
+    for i in full_to_reduced:
+        for j in full_to_reduced:
+            if i != j:
+                reduced_i, reduced_j = full_to_reduced[i], full_to_reduced[j]
+                full_dist_matrix[i, j] = int(dist_matrix[reduced_i, reduced_j]) + 1
+    
+    return full_dist_matrix
+
+def build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues, atom_names, ligand_bonds):
+    """Build graph edges from coordinates and distance matrix.
+    Creates a fully connected graph with residue relationship features.
+    dist_matrix only contains distances between CA atoms, side chain centers, and ligand atoms.
+    """
+    n = len(receptor_coords) + ligand_size
+    edge_list, edge_dist, edge_attr, edge_bonds_list = [], [], [], []
     
     # Extend data structures for ligand
     res_ids = receptor_residues + [receptor_residues[-1]+1 if receptor_residues else 0]*ligand_size
+    
+    # Expand reduced distance matrix to full node set
+    full_dist_matrix = expand_dist_matrix(dist_matrix, receptor_coords, ligand_size, atom_names)
     
     for i in range(n):
         for j in range(i+1, n):
@@ -211,8 +325,8 @@ def build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues):
             edge_list.append([i, j])
             edge_list.append([j, i])
             
-            # Store discrete distance
-            discrete_dist = int(dist_matrix[i, j])
+            # Store discrete distance from expanded matrix
+            discrete_dist = int(full_dist_matrix[i, j])
             edge_dist.append(discrete_dist)
             edge_dist.append(discrete_dist)
             
@@ -220,23 +334,29 @@ def build_edges(receptor_coords, ligand_size, dist_matrix, receptor_residues):
             is_same_residue = 1 if res_i == res_j else 0
             edge_attr.append([is_same_residue])
             edge_attr.append([is_same_residue])
+            
+            # Store ligand bond type
+            bond_type = int(ligand_bonds[i, j])
+            edge_bonds_list.append(bond_type)
+            edge_bonds_list.append(bond_type)
         
-    return np.array(edge_list).T, np.array(edge_dist), np.array(edge_attr)
+    return np.array(edge_list).T, np.array(edge_dist), np.array(edge_attr), np.array(edge_bonds_list)
 
-def build_nodes(mol_types, codes, ligand_size):
+def build_nodes(mol_types, codes, ligand_atoms):
     node_attrs = []
     for i in range(len(mol_types)):
         node_attrs.append(np.concatenate([mol_types[i], codes[i]]))
 
-    for i in range(ligand_size):
-        node_attrs.append(np.concatenate([[0, 0, 1], get_atom_one_hot('X')]))
+    for atom_symbol in ligand_atoms:
+        node_attrs.append(np.concatenate([[0, 0, 1], get_atom_one_hot(atom_symbol)]))
     
     return np.array(node_attrs)
 
 def get_ligand_atoms_and_coords(mol):
-    """Get ligand atoms and coordinates from molecule."""
+    """Get ligand atoms, coordinates, and bond matrix from molecule."""
     ligand_atoms = []
     ligand_coords = []
+    atom_idx_map = {}
     
     # Get the conformer from the molecule
     conf = mol.GetConformer()
@@ -244,14 +364,38 @@ def get_ligand_atoms_and_coords(mol):
     for atom in mol.GetAtoms():
         if atom.GetSymbol() == 'H':
             continue
-        ligand_atoms.append(atom.GetSymbol())
+        atom_idx_map[atom.GetIdx()] = len(ligand_atoms)
+        # Convert atom symbol to ligand element format with _ prefix
+        atom_symbol = '_' + atom.GetSymbol()
+        ligand_atoms.append(atom_symbol)
         ligand_coords.append(conf.GetAtomPosition(atom.GetIdx()))
     
-    return ligand_atoms, ligand_coords
+    ligand_size = len(ligand_atoms)
+    bond_matrix = np.full((ligand_size, ligand_size), LIGAND_BOND_TYPE2IDX['NO_BOND'], dtype=np.int64)
+    
+    for bond in mol.GetBonds():
+        begin_idx = bond.GetBeginAtomIdx()
+        end_idx = bond.GetEndAtomIdx()
+        if mol.GetAtomWithIdx(begin_idx).GetSymbol() == 'H' or mol.GetAtomWithIdx(end_idx).GetSymbol() == 'H':
+            continue
+        if begin_idx in atom_idx_map and end_idx in atom_idx_map:
+            i, j = atom_idx_map[begin_idx], atom_idx_map[end_idx]
+            bond_type_idx = get_ligand_bond_type(bond.GetBondType())
+            bond_matrix[i, j] = bond_matrix[j, i] = bond_type_idx
+    
+    return ligand_atoms, ligand_coords, bond_matrix
 
 def create_dist_matrix(receptor_coords, ligand_coords, discretization_config='b12'):
-    """Helper function to create distance matrix from coordinates"""
-
+    """Helper function to create distance matrix from coordinates.
+    
+    Args:
+        receptor_coords: Array of receptor atom coordinates (CA and SC centers)
+        ligand_coords: Array of ligand atom coordinates
+        discretization_config: Distance discretization configuration
+        
+    Returns:
+        Distance matrix with discretized distances between all receptor and ligand atoms
+    """
     coords = np.concatenate([receptor_coords, ligand_coords], axis=0)
 
     # Create distance matrix from coordinates
@@ -270,11 +414,11 @@ def create_dist_matrix(receptor_coords, ligand_coords, discretization_config='b1
     
     return dist_matrix
 
-class CoordsDataset(Dataset):
-    """Dataset for predicting coordinates from distance matrix."""
-    
+class ContDataset(Dataset):
+    """Dataset for predicting continuous features from distance matrix."""
+
     def __init__(self, split='train', cache_mode='memory', cache_dir='cache'):
-        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='coords')
+        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='cont')
         self.split = split
         
         with db_connection() as conn:
@@ -349,6 +493,7 @@ class CoordsDataset(Dataset):
         # Add edge data to edata - separate distance and residue attributes
         g.edata['edge_dist'] = torch.tensor(edge_dist, dtype=torch.long)
         g.edata['edge_attr'] = torch.tensor(features['edge_attr'], dtype=torch.long)
+        g.edata['ligand_bonds'] = torch.tensor(features['ligand_bonds'], dtype=torch.long)
         
         return g
     

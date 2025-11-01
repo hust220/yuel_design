@@ -1,6 +1,6 @@
 # Project settings
 project = "yuel_design"
-exp_name = "coords"
+exp_name = "cont"
 wandb_entity = None  # Set to your wandb username/team, or None for default
 enable_progress_bar = True
 
@@ -13,8 +13,7 @@ log_iterations = 20
 checkpoints = "checkpoints"
 seed = 42
 device = "cuda"
-# resume = 'coords_bs1_date30-10_time07-35-25.132397'  # Set to experiment name to resume training
-resume = 'coords_bs1_date30-10_time10-51-35.275969'  # Set to experiment name to resume training
+resume = None  # Set to experiment name to resume training
 
 # Memory settings
 cache_mode = "file"
@@ -31,5 +30,5 @@ diffusion_noise_precision = 1e-5
 t_weight_power = 0.0
 n_blocks = 16
 hidden_nf = 64
-in_node_features = 44 # 3 (mol_types) + 1 (CA) + 20 (side chain types) + 19 (ligand atoms) + 1 ('X')
-in_edge_features = 1
+in_node_features = 122 # 3 (mol_types) + 1 (X) + 20 (protein cg atom types) + 79 (protein aa atom types) + 19 (ligand atoms)
+in_edge_features = 19 # 13 (distance) + 5 (ligand bond type) + 1 (is_same_residue)

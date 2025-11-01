@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from src.evoformer import EvoformerStack, Linear
+from tqdm import tqdm
 
 class DiffusionTransitionMatrix(nn.Module):
     """Transition matrices for discrete diffusion process."""
@@ -230,12 +231,11 @@ class DiscModel(torch.nn.Module):
         }
         
         # Store intermediate results
-        # chain = torch.zeros((keep_frames, b, n * n), device=seq.device)
         chain = []
         
         # Sample p(x_{t-1} | x_t)
-        for i, t in enumerate(reversed(range(1, self.n_T))):
-            t_tensor = torch.full((b,), fill_value=t, device=x.device) # [B] - timestep
+        for i, t in enumerate(tqdm(reversed(range(1, self.n_T)), desc="Diffusion sampling", total=self.n_T-1)):
+            t_tensor = torch.full((b,), fill_value=t, device=cond['seq'].device) # [B] - timestep
 
             # Generate noise for Gumbel sampling
             noise = {
@@ -245,7 +245,7 @@ class DiscModel(torch.nn.Module):
             }
             
             # Predict clean data from current noisy state
-            atoms_logits, z_logits = self.model_predict(x, t, cond)
+            atoms_logits, z_logits = self.model_predict(x, t_tensor, cond)
             bonds_logits = z_logits[:, :, :, self.num_classes:]
             dist_logits = z_logits[:, :, :, :self.num_classes]
             x = {
@@ -255,11 +255,8 @@ class DiscModel(torch.nn.Module):
             }
 
             chain.append(x)
-            
-        chain = torch.stack(chain, dim=0)
-        chain = chain.view(-1, b, n, n)
         
-        return chain[-1], chain
+        return x, chain
 
 
     def q_posterior_logits(self, x_0, x_t, t, hmm):

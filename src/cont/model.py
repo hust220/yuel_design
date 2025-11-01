@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 from torch.nn import Linear
+from tqdm import tqdm
 
 # Local imports
 from src.noise import GammaNetwork, PredefinedNoiseSchedule
@@ -64,7 +65,7 @@ def sigma_and_alpha_t_given_s(gamma_t: torch.Tensor, gamma_s: torch.Tensor, targ
 
     return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-class CoordsModel(torch.nn.Module):
+class ContModel(torch.nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         
@@ -96,7 +97,7 @@ class CoordsModel(torch.nn.Module):
         # 2. 边特征嵌入层 (e: in_dim -> hidden_nf)
         # 注意：e 的输出维度必须与 GNN 层期望的 e 的维度 (hidden_nf) 一致。
         self.embedding_edge = nn.Sequential(
-            Linear(in_edge_features + 12, hidden_nf),
+            Linear(in_edge_features, hidden_nf),
             nn.SiLU(),
             Linear(hidden_nf, hidden_nf)
         )
@@ -131,8 +132,9 @@ class CoordsModel(torch.nn.Module):
         t_expanded = t.expand(h.shape[0], 1).to(h.device)  # [n_nodes, 1]
         h = torch.cat([h, t_expanded], dim=1) # [n_nodes, n_node_features + 1]
 
-        edge_dist_one_hot = torch.nn.functional.one_hot(graph.edata['edge_dist'], num_classes=12).float()
-        edge_attr = torch.cat([edge_dist_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
+        edge_dist_one_hot = torch.nn.functional.one_hot(graph.edata['edge_dist'], num_classes=13).float()
+        ligand_bonds_one_hot = torch.nn.functional.one_hot(graph.edata['ligand_bonds'], num_classes=5).float()
+        edge_attr = torch.cat([edge_dist_one_hot, ligand_bonds_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
         
         h = self.embedding_node(h)
         e = self.embedding_edge(edge_attr)
@@ -175,7 +177,7 @@ class CoordsModel(torch.nn.Module):
         chain = []
 
         # Sample p(z_s | z_t) - treat as single graph
-        for s_step in reversed(range(0, self.T)):
+        for s_step in tqdm(reversed(range(0, self.T)), desc="Diffusion sampling", total=self.T):
             # For single graph, keep time steps as scalars [1] for consistency
             s_val = torch.tensor([s_step], dtype=torch.float32, device=x.device)  # [1]
             t_val = s_val + 1
@@ -214,8 +216,6 @@ class CoordsModel(torch.nn.Module):
         # sigma_t_given_s: [N], sigma_s: [N, 1], sigma_t: [N, 1]
         sigma_t_given_s = sigma_t_given_s[:, None]  # [N] -> [N, 1] for broadcasting
         sigma_sampling = sigma_t_given_s * sigma_s / sigma_t # [N, 1]
-
-        # Sample z_s given the parameters derived from zt
         eps = torch.randn_like(mu)# [N, F]
         # eps: [N, F], sigma_sampling: [N, F], mu: [N, F]
         xt = mu + sigma_sampling * eps # [N, F]

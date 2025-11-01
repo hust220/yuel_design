@@ -1,6 +1,9 @@
 import pytest
 import sys
 import torch
+import numpy as np
+import tempfile
+import os
 from pathlib import Path
 
 # Add the project root to Python's path
@@ -8,11 +11,13 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.coords.app import run_coords_mode, save_coords_pdb, save_coords_trajectory
-from src.coords.dataset import (
+from src.cont.app import run_cont_mode, save_coords_pdb, save_coords_trajectory, load_disc_predictions
+from src.cont.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_dist_matrix,
+    get_ligand_bond_type,
+    LIGAND_BOND_TYPE2IDX,
 )
 
 def get_random_moad_sample():
@@ -30,59 +35,68 @@ def get_random_moad_sample():
                 """
             )
             row = c.fetchone()
-            if row is None:
-                raise ValueError("No samples found in moad_pockets table")
             pocket_id, pocket_pdb, ligand_mol, ligand_name = row
             return pocket_id, pocket_pdb, ligand_mol, ligand_name
-
-
-def parse_pdb_to_structure(pdb_content: str):
-    """Parse PDB content to structure object"""
-    from src.pdb_utils import Structure
-    from io import StringIO
-
-    structure = Structure()
-    structure.read(StringIO(pdb_content))
-    return structure
 
 
 def read_molecule_from_molblock(molblock: str):
     from rdkit import Chem
     mol = Chem.MolFromMolBlock(molblock)
-    if mol is not None:
-        mol = Chem.RemoveHs(mol)
-    return mol
+    return Chem.RemoveHs(mol) if mol is not None else None
 
 
-# Use create_dist_matrix from src.coords.dataset for consistency
+def create_disc_predictions_from_mol(mol, pocket_info):
+    """Create disc project predictions from molecule and pocket info.
+    
+    This simulates what disc project would output:
+    - dist_matrix: (n_ca_sc + ligand_size, n_ca_sc + ligand_size) - distance class indices
+    - ligand_atoms: list of atom names (strings like 'C', 'N', 'O')
+    - ligand_bonds: (ligand_size, ligand_size) - bond class indices
+    """
+    ligand_atoms_cont, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
+    ligand_atoms_names = [atom.replace('_', '') for atom in ligand_atoms_cont]
+    ligand_size = len(ligand_atoms_names)
+    
+    # Extract CA and SC coordinates from pocket (same logic as dataset.py)
+    atom_names = pocket_info['atom_names']
+    ca_or_sc_coords = np.array([
+        coord for coord, name in zip(pocket_info['coords'], atom_names)
+        if name == 'CA' or name.endswith('_SC')
+    ])
+    
+    dist_matrix = create_dist_matrix(ca_or_sc_coords, np.array(ligand_coords), discretization_config='b12')
+    
+    return dist_matrix, ligand_atoms_names, ligand_bond_matrix
 
 
-def test_coords_mode(device):
+def test_cont_mode(device):
+    """Test cont mode with disc project predictions"""
     while True:
         pocket_id, pocket_pdb, ligand_mol, ligand_name = get_random_moad_sample()
-        print(f"Testing coords mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
+        print(f"Testing cont mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
         mol = read_molecule_from_molblock(ligand_mol)
-        if mol is not None:
+        if mol:
             break
 
-    pocket_structure = parse_pdb_to_structure(pocket_pdb)
-    pocket_info = parse_pocket(pocket_structure)
-
-    ligand_atoms, ligand_coords = get_ligand_atoms_and_coords(mol)
-    ligand_size = len(ligand_atoms)
-    print(f"Using ligand size: {ligand_size} atoms (excluding H)")
-
-    dist_matrix = torch.tensor(create_dist_matrix(pocket_info['coords'], ligand_coords, discretization_config='b12'))
-
-    final_prediction, chain, pocket_info = run_coords_mode(
-        pocket_structure=pocket_structure,
-        ligand_size=ligand_size,
+    from src.pdb_utils import Structure
+    from io import StringIO
+    structure = Structure()
+    structure.read(StringIO(pocket_pdb))
+    pocket_info = parse_pocket(structure)
+    
+    # Create disc project predictions
+    dist_matrix, ligand_atoms_names, ligand_bonds = create_disc_predictions_from_mol(mol, pocket_info)
+    
+    final_prediction, chain, pocket_info = run_cont_mode(
+        pocket_structure=pocket_pdb,
         dist_matrix=dist_matrix,
+        ligand_atoms=ligand_atoms_names,
+        ligand_bonds=ligand_bonds,
         device=device,
     )
 
     import os
-    output_dir = f"test_outputs/coords_{pocket_id}"
+    output_dir = f"test_outputs/cont_{pocket_id}"
     os.makedirs(output_dir, exist_ok=True)
 
     original_pdb_path = os.path.join(output_dir, "original_receptor.pdb")
@@ -101,49 +115,95 @@ def test_coords_mode(device):
     print(f"Saving trajectory to {trajectory_path}")
     save_coords_trajectory(chain, pocket_info, trajectory_path)
 
-    print(f"✓ Coords mode test passed! Generated coordinates with shape: {final_prediction.shape}")
+    print(f"✓ Cont mode test passed! Generated coordinates with shape: {final_prediction.shape}")
     print(f"  Chain length: {len(chain)}")
     print(f"  Pocket atoms: {len(pocket_info['coords'])}")
 
 
-@pytest.mark.parametrize("ligand_size", [10, 20, 30])
-def test_coords_mode_different_sizes(moad_sample, device, ligand_size):
-    pocket_id, pocket_pdb, ligand_mol, ligand_name = moad_sample
-    print(f"Testing coords mode with ligand size {ligand_size} for sample: {pocket_id}")
+def test_cont_mode_with_files(device):
+    """Test cont mode with disc project prediction files"""
+    while True:
+        pocket_id, pocket_pdb, ligand_mol, ligand_name = get_random_moad_sample()
+        print(f"Testing cont mode with files: {pocket_id}, ligand: {ligand_name}")
+        mol = read_molecule_from_molblock(ligand_mol)
+        if mol:
+            break
 
-    pocket_structure = parse_pdb_to_structure(pocket_pdb)
-    pocket_info = parse_pocket(pocket_structure)
-    n_atoms = len(pocket_info['coords']) + ligand_size
-    dist_matrix = torch.randint(0, 12, (n_atoms, n_atoms))
-
-    try:
-        final_prediction, chain, pocket_info = run_coords_mode(
-            pocket_structure=pocket_structure,
-            ligand_size=ligand_size,
+    from src.pdb_utils import Structure
+    from io import StringIO
+    structure = Structure()
+    structure.read(StringIO(pocket_pdb))
+    pocket_info = parse_pocket(structure)
+    
+    # Create disc project predictions
+    dist_matrix, ligand_atoms_names, ligand_bonds = create_disc_predictions_from_mol(mol, pocket_info)
+    
+    # Create temporary files to simulate disc project output
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dist_matrix_file = os.path.join(tmpdir, "dist_matrix.txt")
+        ligand_atoms_file = os.path.join(tmpdir, "ligand_atoms.txt")
+        ligand_bonds_file = os.path.join(tmpdir, "ligand_bonds.txt")
+        
+        # Save distance matrix (class indices)
+        np.savetxt(dist_matrix_file, dist_matrix, fmt='%d')
+        
+        # Save ligand atoms (one name per line)
+        with open(ligand_atoms_file, 'w') as f:
+            for atom_name in ligand_atoms_names:
+                f.write(f"{atom_name}\n")
+        
+        # Save ligand bonds (class indices)
+        np.savetxt(ligand_bonds_file, ligand_bonds, fmt='%d')
+        
+        dist_matrix, ligand_atoms, ligand_bonds = load_disc_predictions(
+            dist_matrix_file,
+            ligand_atoms_file,
+            ligand_bonds_file,
+        )
+        
+        final_prediction, chain, pocket_info = run_cont_mode(
+            pocket_structure=pocket_pdb,
             dist_matrix=dist_matrix,
+            ligand_atoms=ligand_atoms,
+            ligand_bonds=ligand_bonds,
             device=device,
         )
-
-        assert final_prediction.shape[0] == n_atoms
+        
+        assert final_prediction.shape[0] == len(pocket_info['coords']) + len(ligand_atoms_names)
         assert final_prediction.shape[1] == 3
-        print(f"✓ Ligand size {ligand_size} test passed!")
+        print(f"✓ Cont mode with files test passed! Generated coordinates with shape: {final_prediction.shape}")
 
-    except FileNotFoundError:
-        pytest.skip("Model checkpoint not found")
-    except Exception as e:
-        pytest.fail(f"Coords mode test failed for ligand size {ligand_size}: {e}")
+
+def test_cont_mode_with_dataset(device):
+    """Test using ContDataset to load data and ContModel to generate coordinates"""
+    from src.cont.dataset import ContDataset
+    from src.cont.model import ContModel
+    from src.lightning1 import LightningWrapper
+    from src.utils import pick_latest
+    import src.gnn as gnn
+    
+    dataset = ContDataset(split='train')
+    graph = dataset[0]
+    graph = graph.to(device)
+    
+    cont_checkpoint = pick_latest(['checkpoints/*cont*/*.ckpt'])
+    model = LightningWrapper.load_from_checkpoint(cont_checkpoint, map_location='cpu')
+    model = model.eval()
+    model = model.to(device)
+    
+    with torch.no_grad():
+        final_prediction, chain = model.sample_chain(graph=graph)
+    
+    assert final_prediction.shape[0] == graph.ndata['x'].shape[0]
+    assert final_prediction.shape[1] == 3
+    print(f"✓ Cont mode with dataset test passed! Generated coordinates with shape: {final_prediction.shape}")
 
 
 @pytest.fixture
 def moad_sample():
-    try:
-        return get_random_moad_sample()
-    except Exception as e:
-        pytest.skip(f"Could not get MOAD sample: {e}")
+    return get_random_moad_sample()
 
 
 @pytest.fixture
 def device():
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-

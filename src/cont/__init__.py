@@ -1,4 +1,4 @@
-from .dataset import CoordsDataset
-from .model import CoordsModel
+from .dataset import ContDataset
+from .model import ContModel
 
-__all__ = ['CoordsDataset', 'CoordsModel']
+__all__ = ['ContDataset', 'ContModel']
