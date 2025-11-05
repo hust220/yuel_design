@@ -1,6 +1,6 @@
 # Project settings
 project = "yuel_design"
-exp_name = "disc"
+exp_name = "disc2"
 wandb_entity = None  # Set to your wandb username/team, or None for default
 enable_progress_bar = True
 
@@ -41,9 +41,11 @@ forward_type = "uniform"
 hybrid_loss_coeff = 0.0
 
 no_dist_bins = 12
-seq_input_dim = 44 # 3 (mol_types) + 1 (CA) + 20 (side chain types) + 19 (ligand atoms) + 1 ('X')
+# seq_input_dim: 3 (mol_types: is_CA, is_SC, is_Ligand) + 68 (ALLOWED_ATOM_TYPES one-hot encoding)
+# ALLOWED_ATOM_TYPES = 1 (X) + 49 (protein_atoms: CA + 43 non-C atoms + 5 ring centers) + 18 (ligand_elements)
+seq_input_dim = 71  # 3 + 68
 z_input_dim = 1
 bb_dist_bins = 13
 
-no_ligand_atom_types = 19
-no_ligand_bond_types = 2
+# LIGAND_ATOM_TYPES = 18 (ligand_elements) + 5 (RING_CENTERS)
+no_ligand_atom_types = 23

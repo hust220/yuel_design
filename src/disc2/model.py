@@ -65,7 +65,7 @@ class DiscModel(torch.nn.Module):
             1 - alpha_bar[1:] / alpha_bar[:-1], torch.ones_like(alpha_bar[1:]) * 0.999
         )
         
-        # Create transition matrices for distance, ligand_atoms, and ligand_bonds
+        # Create transition matrices for distance and ligand_atoms
         self.num_classes = kwargs.get('no_dist_bins', 12)
         self.hmm_dist = DiffusionTransitionMatrix(
             num_classes=self.num_classes,
@@ -83,24 +83,7 @@ class DiscModel(torch.nn.Module):
             forward_type=self.forward_type,
             eps=self.eps
         )
-        
-        self.num_ligand_bond_types = kwargs.get('no_ligand_bond_types', 2)
-        self.hmm_ligand_bonds = DiffusionTransitionMatrix(
-            num_classes=self.num_ligand_bond_types,
-            timesteps=timesteps,
-            beta_t=self.beta_t,
-            forward_type=self.forward_type,
-            eps=self.eps
-        )
-        
-        # Focal loss parameters for bonds (to handle class imbalance)
-        # NO_BOND (class 0) vs BONDED (class 1) ratio is approximately (n*n-2n):2n
-        # Set lower alpha for NO_BOND (class 0) to reduce its weight
-        # [NO_BOND, BONDED]
-        focal_alpha_bonds = [0.25, 1.0]
-        self.register_buffer('focal_alpha_bonds', torch.tensor(focal_alpha_bonds, dtype=torch.float32))
-        self.focal_gamma_bonds = 2.0
-        
+                        
         # Create the Evoformer for distogram prediction
         self.evoformer = EvoformerStack(
             c_m=kwargs.get('c_m', 64),
@@ -123,14 +106,13 @@ class DiscModel(torch.nn.Module):
         seq_input_dim_total = kwargs.get('seq_input_dim', 32) + self.num_ligand_atom_types + 3
         self.embed_seq = nn.Linear(seq_input_dim_total, kwargs.get('c_m', 64))
         
-        # Persist bb_dist bins and embed z from [N, N, z + bb_dist_bins + num_classes + bonds + masks(2) + time] to [N, N, c_z]
+        # Persist bb_dist bins and embed z from [N, N, z + bb_dist_bins + num_classes + masks(2) + time] to [N, N, c_z]
         self.bb_dist_bins = kwargs.get('bb_dist_bins', 13)
         z_input_dim_total = (
             kwargs.get('z_input_dim', 1)
             + self.bb_dist_bins
             + self.num_classes
-            + self.num_ligand_bond_types
-            + 3  # pair_mask + pair_ligand_mask + time
+            + 2  # pair_mask + time
         )
         self.embed_z = nn.Linear(z_input_dim_total, kwargs.get('c_z', 64))
         
@@ -142,12 +124,6 @@ class DiscModel(torch.nn.Module):
             nn.SiLU(),
             Linear(c_z, self.num_classes, init="final")
         )
-        # Bond prediction head: two-layer MLP
-        self.bond_out = nn.Sequential(
-            Linear(c_z, c_z, init="relu"),
-            nn.SiLU(),
-            Linear(c_z, self.num_ligand_bond_types, init="final")
-        )
 
     def forward(self, data, training=None):
         """Forward pass for training using D3PM discrete diffusion on DistAttDataset"""
@@ -158,13 +134,11 @@ class DiscModel(torch.nn.Module):
             'seq_mask': data['seq_mask'], # [B, N] - sequence mask
             'pair_mask': data['pair_mask'], # [B, N, N] - pair mask
             'seq_ligand_mask': data['seq_ligand_mask'], # [B, N] - ligand atom mask
-            'pair_ligand_mask': data['pair_ligand_mask'], # [B, N, N] - ligand bond mask
         }
         
         target = {
             'dist':  data['dist'], # [B, N, N] - target distance classes
             'atoms': data['ligand_atoms'], # [B, N] - target ligand atom classes
-            'bonds': data['ligand_bonds'], # [B, N, N] - target ligand bond classes
         }
         
         b, n, _ = cond['seq'].shape
@@ -173,7 +147,6 @@ class DiscModel(torch.nn.Module):
         x0 = {
             'dist': target['dist'].flatten(start_dim=1), # (B, N*N) - discrete distance class indices
             'atoms': target['atoms'].flatten(start_dim=1), # (B, N) - discrete ligand atom class indices
-            'bonds': target['bonds'].flatten(start_dim=1), # (B, N*N) - discrete ligand bond class indices
         }
         
         # Sample random timestep for training
@@ -183,41 +156,30 @@ class DiscModel(torch.nn.Module):
         xt = {
             'dist': self.q_sample(x0['dist'], t, torch.rand((*x0['dist'].shape, self.num_classes), device=x0['dist'].device), self.hmm_dist),
             'atoms': self.q_sample(x0['atoms'], t, torch.rand((*x0['atoms'].shape, self.num_ligand_atom_types), device=x0['atoms'].device), self.hmm_ligand_atoms),
-            'bonds': self.q_sample(x0['bonds'], t, torch.rand((*x0['bonds'].shape, self.num_ligand_bond_types), device=x0['bonds'].device), self.hmm_ligand_bonds)
         }
         
         # Apply masks: set non-ligand parts to 0
         # Keep as LongTensor for one_hot operations
         xt['atoms'] = (xt['atoms'] * cond['seq_ligand_mask']).long()
-        xt['bonds'] = (xt['bonds'] * cond['pair_ligand_mask'].view(b, n * n)).long()
         
         # Predict clean data from noisy data
-        atoms_logits, dist_logits, bonds_logits = self.model_predict(xt, t, cond)
+        atoms_logits, dist_logits = self.model_predict(xt, t, cond)
 
         # Cross-entropy loss (direct prediction of clean data) - masked
         loss = {
             'dist': self.ce_masked(dist_logits.view(-1, self.num_classes), x0['dist'].view(-1), cond['pair_mask'].view(-1)),
             'atoms': self.ce_masked(atoms_logits.view(-1, self.num_ligand_atom_types), x0['atoms'].view(-1), cond['seq_ligand_mask'].view(-1)),
-            'bonds': self.focal_loss_masked(
-                bonds_logits.view(-1, self.num_ligand_bond_types), 
-                x0['bonds'].view(-1), 
-                cond['pair_ligand_mask'].view(-1),
-                self.focal_alpha_bonds,
-                self.focal_gamma_bonds
-            )
         }
 
         metrics = {
             'dist': self.metrics_masked(dist_logits.view(-1, self.num_classes), x0['dist'].view(-1), cond['pair_mask'].view(-1), self.num_classes),
             'atoms': self.metrics_masked(atoms_logits.view(-1, self.num_ligand_atom_types), x0['atoms'].view(-1), cond['seq_ligand_mask'].view(-1), self.num_ligand_atom_types),
-            'bonds': self.metrics_masked(bonds_logits.view(-1, self.num_ligand_bond_types), x0['bonds'].view(-1), cond['pair_ligand_mask'].view(-1), self.num_ligand_bond_types)
         }
 
         rt = {
-            'loss': loss['dist'] + loss['atoms'] + loss['bonds'], 
+            'loss': loss['dist'] + loss['atoms'], 
             'dist_loss': loss['dist'], 
             'atoms_loss': loss['atoms'], 
-            'bonds_loss': loss['bonds'], 
         }
         for k, v in metrics.items():
             for metric_name, metric in v.items():
@@ -326,7 +288,6 @@ class DiscModel(torch.nn.Module):
             'seq_mask': data['seq_mask'], # [B, N] - sequence mask
             'pair_mask': data['pair_mask'], # [B, N, N] - pair mask
             'seq_ligand_mask': data['seq_ligand_mask'], # [B, N] - ligand atom mask
-            'pair_ligand_mask': data['pair_ligand_mask'], # [B, N, N] - ligand bond mask
         }
         
         b, n, _ = cond['seq'].shape
@@ -336,7 +297,6 @@ class DiscModel(torch.nn.Module):
         x = {
             'dist': torch.randint(0, self.num_classes, (b, n * n), device=cond['seq'].device),
             'atoms': torch.randint(0, self.num_ligand_atom_types, (b, n), device=cond['seq'].device),
-            'bonds': torch.randint(0, self.num_ligand_bond_types, (b, n * n), device=cond['seq'].device),
         }
         
         # Store intermediate results
@@ -350,27 +310,23 @@ class DiscModel(torch.nn.Module):
             noise = {
                 'dist': torch.rand((b, n * n, self.num_classes), device=cond['seq'].device),
                 'atoms': torch.rand((b, n, self.num_ligand_atom_types), device=cond['seq'].device),
-                'bonds': torch.rand((b, n * n, self.num_ligand_bond_types), device=cond['seq'].device),
             }
             
             # Predict clean data from current noisy state
             # Apply masks and keep as LongTensor for one_hot operations
             x['atoms'] = (x['atoms'] * cond['seq_ligand_mask']).long()
-            x['bonds'] = (x['bonds'] * cond['pair_ligand_mask'].view(b, n * n)).long()
-            atoms_logits, dist_logits, bonds_logits = self.model_predict(x, t_tensor, cond)
+            atoms_logits, dist_logits = self.model_predict(x, t_tensor, cond)
             # Reshape from [B, N, N, num_classes] to [B, N*N, num_classes]
             dist_logits = dist_logits.view(b, n * n, self.num_classes)
-            bonds_logits = bonds_logits.view(b, n * n, self.num_ligand_bond_types)
             x = {
                 'dist': self.p_sample(x['dist'], t_tensor, dist_logits, noise['dist'], self.hmm_dist),
                 'atoms': self.p_sample(x['atoms'], t_tensor, atoms_logits, noise['atoms'], self.hmm_ligand_atoms),
-                'bonds': self.p_sample(x['bonds'], t_tensor, bonds_logits, noise['bonds'], self.hmm_ligand_bonds),
             }
 
             chain.append(x)
         
-        # x: {dist: [B, N*N], atoms: [B, N], bonds: [B, N*N]}
-        # chain: [{dist: [B, N*N], atoms: [B, N], bonds: [B, N*N]}]
+        # x: {dist: [B, N*N], atoms: [B, N]}
+        # chain: [{dist: [B, N*N], atoms: [B, N]}]
         return x, chain 
 
 
@@ -447,55 +403,6 @@ class DiscModel(torch.nn.Module):
         else:
             return torch.tensor(0.0, device=logits.device)
     
-    def focal_loss_masked(self, logits, targets, mask, alpha, gamma):
-        """
-        Compute masked focal loss for imbalanced classes.
-        
-        Focal Loss: FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
-        
-        Args:
-            logits: Predicted logits (-1, num_classes)
-            targets: Target class indices (-1,)
-            mask: Mask indicating valid elements (-1,)
-            alpha: Class weights tensor (num_classes,) or scalar
-            gamma: Focusing parameter (scalar)
-        
-        Returns:
-            Average focal loss over valid elements only
-        """
-        valid_mask = mask.bool()
-        if valid_mask.sum() == 0:
-            return torch.tensor(0.0, device=logits.device)
-        
-        # Compute softmax probabilities
-        probs = torch.nn.functional.softmax(logits, dim=-1)  # (-1, num_classes)
-        
-        # Get probability of true class for each sample
-        targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=probs.size(-1)).float()
-        p_t = (probs * targets_one_hot).sum(dim=-1)  # (-1,)
-        
-        # Compute log probability
-        log_p_t = torch.log(p_t + 1e-8)
-        
-        # Get alpha for each sample
-        if alpha.dim() == 0:  # scalar
-            alpha_t = alpha
-        else:  # tensor of per-class alphas
-            alpha_t = alpha[targets]  # (-1,)
-        
-        # Compute focal loss: -alpha_t * (1 - p_t)^gamma * log(p_t)
-        focal_weight = (1 - p_t) ** gamma
-        focal_loss_per_sample = -alpha_t * focal_weight * log_p_t
-        
-        # Apply mask and compute mean
-        masked_focal = focal_loss_per_sample * valid_mask.float()
-        valid_count = valid_mask.sum().float()
-        
-        if valid_count > 0:
-            return masked_focal.sum() / valid_count
-        else:
-            return torch.tensor(0.0, device=logits.device)
-
     def q_sample(self, x0, t, noise, hmm):
         """
         Sample from the forward process q(xt | x0).
@@ -532,7 +439,6 @@ class DiscModel(torch.nn.Module):
             xt: dict with noisy discrete data
                 - 'atoms': (B, N) - discrete ligand atom class indices
                 - 'dist': (B, N*N) - discrete distance class indices (will be reshaped internally)
-                - 'bonds': (B, N*N) - discrete ligand bond class indices (will be reshaped internally)
             t: Current timestep [B] - timestep
             cond: dict with conditional features
                 - 'seq': [B, N, seq_input_dim]
@@ -541,13 +447,11 @@ class DiscModel(torch.nn.Module):
                 - 'seq_mask': [B, N]
                 - 'pair_mask': [B, N, N]
                 - 'seq_ligand_mask': [B, N]
-                - 'pair_ligand_mask': [B, N, N]
         
         Returns:
-            tuple: (atoms_logits, dist_logits, bond_logits)
+            tuple: (atoms_logits, dist_logits)
                 - atoms_logits: [B, N, num_ligand_atom_types] - predicted ligand atom logits
                 - dist_logits: [B, N, N, num_classes] - predicted distance logits
-                - bond_logits: [B, N, N, num_ligand_bond_types] - predicted bond logits
         """
         b, n, _ = cond['seq'].shape
 
@@ -563,12 +467,10 @@ class DiscModel(torch.nn.Module):
         z = cond['z'] # [B, N, N, z_input_dim]
         bb_dist_onehot = torch.nn.functional.one_hot(cond['bb_dist'].long(), num_classes=self.bb_dist_bins).float() # [B, N, N, bb_dist_bins]
         dist_onehot = torch.nn.functional.one_hot(xt['dist'].view(b, n, n).long(), num_classes=self.num_classes).float() # [B, N, N, num_classes]
-        bonds_onehot = torch.nn.functional.one_hot(xt['bonds'].view(b, n, n).long(), num_classes=self.num_ligand_bond_types).float() # [B, N, N, num_ligand_bond_types]
         pair_mask = cond['pair_mask'][..., None] # [B, N, N, 1]
-        pair_ligand_mask = cond['pair_ligand_mask'][..., None] # [B, N, N, 1]
         # Expand timestep to match pair feature shape for concat: [B] -> [B, N, N, 1]
         t_reshaped = t.view(b, 1, 1, 1).expand(b, n, n, 1)
-        z = torch.cat([z, bb_dist_onehot, dist_onehot, bonds_onehot, pair_mask, pair_ligand_mask, t_reshaped], dim=-1) # [B, N, N, z_input_dim + bb_dist_bins + num_classes + num_ligand_bond_types + 1 + 1 + 1]
+        z = torch.cat([z, bb_dist_onehot, dist_onehot, pair_mask, t_reshaped], dim=-1) # [B, N, N, z_input_dim + bb_dist_bins + num_classes + 1 + 1 + 1]
                 
         # Embed seq and z
         seq_embedded = self.embed_seq(seq)
@@ -586,10 +488,7 @@ class DiscModel(torch.nn.Module):
         # Predict distance logits using two-layer MLP
         dist_logits = self.dist_out(z_out)
         
-        # Predict bond logits using two-layer MLP
-        bond_logits = self.bond_out(z_out)
-                
-        return seq_out, dist_logits, bond_logits
+        return seq_out, dist_logits
     
     def p_sample(self, x, t, predicted_logits, noise, hmm):
         """

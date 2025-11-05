@@ -10,22 +10,30 @@ from src.pdb_utils import Structure
 from src.cache import FileCache
 from src.db_utils import db_connection
 from src.distance_discretization import discretize_distance_numpy
-from src.const import ALLOWED_PDB_ATOM_TYPES, PDB_ATOM2IDX, ELEMENT2IDX
+from src.const import ALLOWED_PDB_ATOM_TYPES, PDB_ATOM2IDX, ELEMENT2IDX, PROTEIN_ATOM_TYPES
 
 # Define unified atom types for coarse-grained representation
-# Protein atoms: CA + 20 standard amino acid side chains + X_SC for unknown
-STANDARD_AMINO_ACIDS = [
-    'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 'ILE',
-    'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 'TYR', 'VAL'
-]
-protein_atoms = ['CA'] + [f'{aa}_SC' for aa in STANDARD_AMINO_ACIDS]  # Includes GLY_SC
+# Protein atoms: CA + all non-C PDB atoms (from src.const.PROTEIN_ATOM_TYPES)
 
-# Ligand elements: common elements
-ligand_elements = ['C', 'O', 'N', 'F', 'S', 'P', 'Cl', 'Br', 'I',
-                   'ZN', 'MG', 'FE', 'CU', 'MN', 'CO', 'NI', 'MO', 'W', 'SE']
+# Protein non-C atoms: extract all non-C atoms from PDB_ATOM_TYPES
+# This includes: N, O, S, P, ND1, OD1, SG, etc.
+protein_non_c_atoms = []
+for element, atom_names in PROTEIN_ATOM_TYPES.items():
+    if element != 'C':
+        protein_non_c_atoms.extend(atom_names)
 
-# Ligand atom types: same as ligand elements
-LIGAND_ATOM_TYPES = ligand_elements.copy()
+# Ring center virtual atoms (by ring size) - shared by both protein and ligand
+RING_CENTERS = ['RING_3', 'RING_4', 'RING_5', 'RING_6', 'RING_X']  # 3, 4, 5, 6, and larger rings
+
+# Protein atom types: CA + all non-C atoms + ring center virtual atoms
+protein_atoms = ['CA'] + protein_non_c_atoms + RING_CENTERS
+
+# Ligand elements: common elements (non-C atoms only, prefixed with _ to avoid conflict with protein atoms)
+ligand_elements = ['_O', '_N', '_F', '_S', '_P', '_Cl', '_Br', '_I',
+                   '_ZN', '_MG', '_FE', '_CU', '_MN', '_CO', '_NI', '_MO', '_W', '_SE']
+
+# Ligand atom types: elements + ring centers
+LIGAND_ATOM_TYPES = ligand_elements + RING_CENTERS
 
 # Ligand bond types: no_bond, bonded (all bond types merged)
 LIGAND_BOND_TYPES = ['NO_BOND', 'BONDED']
@@ -35,9 +43,13 @@ LIGAND_ATOM_TYPE2IDX = {atom_type: idx for idx, atom_type in enumerate(LIGAND_AT
 LIGAND_BOND_TYPE2IDX = {bond_type: idx for idx, bond_type in enumerate(LIGAND_BOND_TYPES)}
 
 def get_ligand_atom_type(atom_symbol):
-    """Get ligand atom type index from atom symbol."""
-    if atom_symbol in LIGAND_ATOM_TYPE2IDX:
-        return LIGAND_ATOM_TYPE2IDX[atom_symbol]
+    """Get ligand atom type index from atom symbol.
+    Converts RDKit atom symbol (e.g., 'O', 'N') to ligand format with _ prefix (e.g., '_O', '_N').
+    """
+    # Convert to ligand format with _ prefix
+    ligand_symbol = '_' + atom_symbol if not atom_symbol.startswith('_') else atom_symbol
+    if ligand_symbol in LIGAND_ATOM_TYPE2IDX:
+        return LIGAND_ATOM_TYPE2IDX[ligand_symbol]
     return LIGAND_ATOM_TYPE2IDX[LIGAND_ATOM_TYPES[0]]
 
 def get_ligand_bond_type(bond_type):
@@ -49,7 +61,9 @@ def get_ligand_bond_type(bond_type):
         return LIGAND_BOND_TYPE2IDX['BONDED']
     return LIGAND_BOND_TYPE2IDX['NO_BOND']
 
-# Combined atom types
+# Combined atom types: X (unknown) + protein atoms + ligand elements
+# Note: RING_CENTERS are already in protein_atoms, so we only add ligand_elements (not LIGAND_ATOM_TYPES)
+# to avoid duplicating ring centers
 ALLOWED_ATOM_TYPES = ['X'] + protein_atoms + ligand_elements
 
 # Create mapping
@@ -63,16 +77,59 @@ def get_one_hot(atom, atoms_dict):
 
 def get_atom_one_hot(atom_name):
     """Get one-hot encoding for atom name.
-    Supports protein atoms (CA, ALA_SC, ARG_SC, etc.) and ligand elements.
+    Supports protein atoms (CA, ND1, OD1, SG, etc.), ligand elements, and ring centers.
+    For unknown atoms, uses 'X' as fallback.
     """
     if atom_name in ATOM2IDX:
         return get_one_hot(atom_name, ATOM2IDX)
     else:
+        # Fallback to 'X' for unknown atoms
         return get_one_hot('X', ATOM2IDX)
 
+def detect_protein_ring(res_name, residue_atoms):
+    """Detect rings in protein residue side chains.
+    Returns list of (ring_size, ring_center_coord), where ring_size is used to determine ring type.
+    """
+    ring_centers = []
+    
+    # Known aromatic/cyclic amino acids with rings (mapping to ring sizes)
+    aromatic_residues = {
+        'PHE': (['CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ'], 6),  # 6-membered ring
+        'TYR': (['CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ'], 6),  # 6-membered ring
+        'TRP': (['CG', 'CD1', 'CD2', 'NE1', 'CE2', 'CE3', 'CZ2', 'CZ3', 'CH2'], 9),  # 9-membered fused ring system
+        'HIS': (['CG', 'ND1', 'CD2', 'CE1', 'NE2'], 5),  # 5-membered ring
+        'PRO': (['CG', 'CD', 'N'], 5),  # 5-membered ring (includes backbone N)
+    }
+    
+    if res_name in aromatic_residues:
+        ring_atom_names, ring_size = aromatic_residues[res_name]
+        ring_coords = []
+        
+        for name, coord in residue_atoms:
+            if name in ring_atom_names:
+                ring_coords.append(coord)
+        
+        # Only add ring center if we found at least 3 ring atoms
+        if len(ring_coords) >= 3:
+            ring_center = np.mean(ring_coords, axis=0)
+            # Determine ring type based on size
+            if ring_size == 3:
+                ring_type = 'RING_3'
+            elif ring_size == 4:
+                ring_type = 'RING_4'
+            elif ring_size == 5:
+                ring_type = 'RING_5'
+            elif ring_size == 6:
+                ring_type = 'RING_6'
+            else:
+                ring_type = 'RING_X'  # Larger rings
+            ring_centers.append((ring_type, ring_center))
+    
+    return ring_centers
+
+
 def parse_pocket(structure):
-    """Parse protein structure using coarse-grained representation.
-    Each residue is simplified to two atoms: CA (backbone) and side chain center.
+    """Parse protein structure: keep all CA and non-C atoms, plus ring centers as virtual atoms.
     Only supports protein residues, does not handle RNA/DNA.
     """
     coords, mol_types, codes, atom_names, res_ids, res_names = [], [], [], [], [], []
@@ -83,45 +140,45 @@ def parse_pocket(structure):
                 residue_atoms = []
                 ca_coord = None
                 res_name = residue.res_name
+                
                 for atom in residue:
                     if atom.atom_name[0] == 'H':
                         continue
                     if atom.atom_name == 'CA':
                         ca_coord = atom.get_coord()
                     residue_atoms.append((atom.atom_name, atom.get_coord()))
+                
                 if ca_coord is not None:
-                    # CA node
+                    # Always add CA node
                     coords.append(ca_coord)
                     atom_names.append('CA')
                     res_ids.append(ires)
                     res_names.append(res_name)
                     codes.append(get_atom_one_hot('CA'))
                     mol_types.append([1, 0, 0])
-
-                    # side chain center excluding backbone atoms
-                    sc_coords = [c for name, c in residue_atoms if name not in ['CA', 'N', 'C', 'O']]
-                    if sc_coords:
-                        sc_center = np.mean(sc_coords, axis=0)
-                    else:
-                        # gly: approximate side chain along bisector of N-CA-C
-                        n_coord = next((c for name, c in residue_atoms if name == 'N'), None)
-                        c_coord = next((c for name, c in residue_atoms if name == 'C'), None)
-                        if n_coord is not None and c_coord is not None:
-                            n_vec = n_coord - ca_coord
-                            c_vec = c_coord - ca_coord
-                            vec = (n_vec + c_vec)
-                            norm = np.linalg.norm(vec)
-                            sc_center = ca_coord + (vec / norm * 1.5 if norm > 0 else np.array([1.5, 0.0, 0.0]))
-                        else:
-                            sc_center = ca_coord + np.array([1.5, 0.0, 0.0])
-                    coords.append(sc_center)
-                    atom_name = f'{res_name}_SC'
-                    atom_names.append(atom_name)
-                    res_ids.append(ires)
-                    res_names.append(res_name)
-                    codes.append(get_atom_one_hot(atom_name))
-                    mol_types.append([0, 1, 0])
+                    
+                    # Add all non-C atoms (excluding CA and C atoms, but including backbone N and O)
+                    for name, coord in residue_atoms:
+                        if name and name[0] != 'C':  # Non-C atom (includes backbone N, O, OXT and side chain non-C atoms)
+                            coords.append(coord)
+                            atom_names.append(name)
+                            res_ids.append(ires)
+                            res_names.append(res_name)
+                            codes.append(get_atom_one_hot(name))
+                            mol_types.append([0, 1, 0])
+                    
+                    # Detect and add ring centers as virtual atoms
+                    ring_centers = detect_protein_ring(res_name, residue_atoms)
+                    for ring_type, ring_center in ring_centers:
+                        coords.append(ring_center)
+                        atom_names.append(ring_type)  # Use ring type (RING_3, RING_4, etc.)
+                        res_ids.append(ires)
+                        res_names.append(res_name)
+                        codes.append(get_atom_one_hot(ring_type))  # Use ring type for encoding
+                        mol_types.append([0, 1, 0])
+                    
                     ires += 1
+    
     return {
         'coords': coords,
         'mol_types': mol_types,
@@ -143,34 +200,110 @@ def create_z_matrix(res_ids, receptor_coords, ligand_size):
                 z[i, j, 0] = is_same_residue
     return z
 
-def get_ligand_atoms_and_coords(mol):
-    """Get ligand atoms (as atom type indices), coordinates, and bond matrix from molecule."""
-    ligand_atoms = []
-    ligand_coords = []
-    atom_idx_map = {}
+def detect_ligand_rings(mol):
+    """Detect rings in ligand molecule and return ring centers with ring types.
+    Returns list of (ring_type, ring_center_coord), where ring_type is based on ring size.
+    """
+    ring_centers = []
+    ring_info = mol.GetRingInfo()
+    
+    if ring_info is None:
+        return ring_centers
     
     conf = mol.GetConformer()
+    
+    # Get all rings
+    rings = ring_info.AtomRings()
+    for ring_atom_indices in rings:
+        ring_size = len(ring_atom_indices)
+        if ring_size >= 3:
+            # Calculate ring center
+            ring_coords = []
+            for atom_idx in ring_atom_indices:
+                if mol.GetAtomWithIdx(atom_idx).GetSymbol() != 'H':
+                    coord = conf.GetAtomPosition(atom_idx)
+                    # Convert RDKit Point3D to numpy array
+                    ring_coords.append(np.array([coord.x, coord.y, coord.z]))
+            
+            if ring_coords:
+                ring_center = np.mean(ring_coords, axis=0)
+                # Determine ring type based on size
+                if ring_size == 3:
+                    ring_type = 'RING_3'
+                elif ring_size == 4:
+                    ring_type = 'RING_4'
+                elif ring_size == 5:
+                    ring_type = 'RING_5'
+                elif ring_size == 6:
+                    ring_type = 'RING_6'
+                else:
+                    ring_type = 'RING_X'  # Larger rings (7+)
+                ring_centers.append((ring_type, ring_center))
+    
+    return ring_centers
+
+
+def get_ligand_atoms_and_coords(mol, pocket_info):
+    """Get ligand atoms (as atom type indices), coordinates, and bond matrix from molecule.
+    
+    Args:
+        mol: RDKit molecule object
+        pocket_info: Optional dict with pocket information containing 'coords' and 'atom_names'
+                    If provided, applies filtering rules based on distance to protein atoms.
+    
+    Returns:
+        tuple: (ligand_atoms, ligand_coords, bond_matrix)
+    """
+    conf = mol.GetConformer()
+    
+    # Extract protein non-C atoms and ring centers for filtering
+    protein_coords = np.array(pocket_info['coords'])
+
+    protein_atom_names = pocket_info['atom_names']
+    protein_non_c_indices = [i for i, name in enumerate(protein_atom_names) if name[0] != 'C']
+    protein_ring_centers_indices = [i for i, name in enumerate(protein_atom_names) if name.startswith('RING_')]
+    
+    protein_non_c_coords = protein_coords[protein_non_c_indices]
+    protein_ring_centers = protein_coords[protein_ring_centers_indices]
+    
+    # Collect all non-C atoms from ligand
+    ligand_non_c_coords, ligand_non_c_types = [], []
     for atom in mol.GetAtoms():
         if atom.GetSymbol() == 'H':
             continue
-        atom_idx_map[atom.GetIdx()] = len(ligand_atoms)
-        ligand_atoms.append(get_ligand_atom_type(atom.GetSymbol()))
-        ligand_coords.append(conf.GetAtomPosition(atom.GetIdx()))
+        atom_idx = atom.GetIdx()
+        coord = conf.GetAtomPosition(atom_idx)
+        # Convert RDKit Point3D to numpy array
+        coord = np.array([coord.x, coord.y, coord.z])
+        symbol = atom.GetSymbol()
+        
+        if symbol != 'C':
+            ligand_non_c_coords.append(coord)
+            ligand_non_c_types.append(get_ligand_atom_type(symbol))
     
-    ligand_size = len(ligand_atoms)
-    bond_matrix = np.full((ligand_size, ligand_size), LIGAND_BOND_TYPE2IDX['NO_BOND'], dtype=np.int64)
+    # Filter non-C atoms: keep if distance to any protein non-C atom < 3.5
+    filtered_ligand_coords, filtered_ligand_types = [], []
+    for coord, atom_type in zip(ligand_non_c_coords, ligand_non_c_types):
+        distances = np.linalg.norm(protein_non_c_coords - coord, axis=1)
+        if np.any(distances < 3.5):
+            filtered_ligand_coords.append(coord)
+            filtered_ligand_types.append(atom_type)
     
-    for bond in mol.GetBonds():
-        begin_idx = bond.GetBeginAtomIdx()
-        end_idx = bond.GetEndAtomIdx()
-        if mol.GetAtomWithIdx(begin_idx).GetSymbol() == 'H' or mol.GetAtomWithIdx(end_idx).GetSymbol() == 'H':
-            continue
-        if begin_idx in atom_idx_map and end_idx in atom_idx_map:
-            i, j = atom_idx_map[begin_idx], atom_idx_map[end_idx]
-            bond_type_idx = get_ligand_bond_type(bond.GetBondType())
-            bond_matrix[i, j] = bond_matrix[j, i] = bond_type_idx
+    # Detect and filter ring centers
+    ligand_ring_centers = detect_ligand_rings(mol)
+    for ligand_ring_center_type, ligand_ring_center_coord in ligand_ring_centers:
+        distances = np.linalg.norm(protein_ring_centers - ligand_ring_center_coord, axis=1)
+        if np.any(distances < 4.0):
+            filtered_ligand_coords.append(ligand_ring_center_coord)
+            filtered_ligand_types.append(get_ligand_atom_type(ligand_ring_center_type))
     
-    return ligand_atoms, ligand_coords, bond_matrix
+    # Convert to numpy array with correct shape [N, 3]
+    if len(filtered_ligand_coords) == 0:
+        filtered_ligand_coords = np.array([]).reshape(0, 3)
+    else:
+        filtered_ligand_coords = np.array(filtered_ligand_coords)
+            
+    return filtered_ligand_types, filtered_ligand_coords
 
 def create_dist_features(pocket_pdb, ligand_mol):
     """Create distance-based features from protein pocket and ligand."""
@@ -189,13 +322,13 @@ def create_dist_features(pocket_pdb, ligand_mol):
     from io import StringIO
     structure.read(StringIO(pocket_pdb))
 
-    ligand_atoms, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
-    ligand_coords = np.array(ligand_coords)
-    ligand_size = len(ligand_atoms)
-    
     pocket_info = parse_pocket(structure)
     if pocket_info is None:
         return None
+
+    # Get ligand atoms with filtering based on pocket_info
+    ligand_atoms, ligand_coords = get_ligand_atoms_and_coords(mol, pocket_info)
+    ligand_size = len(ligand_atoms)
 
     dist_matrix = create_dist_matrix(pocket_info['coords'], ligand_coords, discretization_config='b12')
 
@@ -206,9 +339,6 @@ def create_dist_features(pocket_pdb, ligand_mol):
     protein_size = len(pocket_info['coords'])
     features['ligand_atoms'] = torch.zeros((protein_size + ligand_size,), dtype=torch.int64)
     features['ligand_atoms'][protein_size:] = torch.tensor(ligand_atoms, dtype=torch.int64)
-
-    features['ligand_bonds'] = torch.zeros((protein_size + ligand_size, protein_size + ligand_size), dtype=torch.int64)
-    features['ligand_bonds'][protein_size:, protein_size:] = torch.tensor(ligand_bond_matrix, dtype=torch.int64)
 
     return features
 
@@ -240,16 +370,12 @@ def init_dist_features(pocket_info, ligand_size):
                 continue
             d = np.linalg.norm(receptor_coords[i] - receptor_coords[j])
             bb_dist[i, j] = discretize_distance_numpy(d, 'b12') + 1
-                
+
     # Create masks
     seq_mask = np.ones(n)
     pair_mask = np.ones((n, n))
     seq_ligand_mask = np.zeros(n)
-    pair_ligand_mask = np.zeros((n, n))
     for i in range(protein_size, n):
-        for j in range(protein_size, n):
-            pair_ligand_mask[i, j] = 1
-            pair_ligand_mask[j, i] = 1
         seq_ligand_mask[i] = 1
 
     features = {
@@ -259,7 +385,6 @@ def init_dist_features(pocket_info, ligand_size):
         'seq_mask': seq_mask,
         'pair_mask': pair_mask,
         'seq_ligand_mask': seq_ligand_mask,
-        'pair_ligand_mask': pair_ligand_mask,
     }
     
     return features
@@ -289,7 +414,7 @@ class DiscDataset(Dataset):
     """Dataset for discrete features prediction."""
 
     def __init__(self, split='train', cache_mode='memory', cache_dir='cache', no_dist_bins=12):
-        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='disc')
+        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='disc2')
         self.split = split
         self.no_dist_bins = no_dist_bins
         
@@ -349,9 +474,7 @@ class DiscDataset(Dataset):
             'seq_mask': torch.tensor(features['seq_mask'], dtype=const.TORCH_FLOAT),
             'pair_mask': torch.tensor(features['pair_mask'], dtype=const.TORCH_FLOAT),
             'seq_ligand_mask': torch.tensor(features['seq_ligand_mask'], dtype=const.TORCH_FLOAT),
-            'pair_ligand_mask': torch.tensor(features['pair_ligand_mask'], dtype=const.TORCH_FLOAT),
             'ligand_atoms': torch.tensor(features['ligand_atoms'], dtype=const.TORCH_INT),
-            'ligand_bonds': torch.tensor(features['ligand_bonds'], dtype=const.TORCH_INT),
         }
 
     @staticmethod
@@ -372,9 +495,7 @@ class DiscDataset(Dataset):
         seq_mask = torch.zeros(bsz, max_n, dtype=torch.float32)
         pair_mask = torch.zeros(bsz, max_n, max_n, dtype=torch.float32)
         ligand_atoms = torch.zeros(bsz, max_n, dtype=torch.int64)
-        ligand_bonds = torch.zeros(bsz, max_n, max_n, dtype=torch.int64)
         seq_ligand_mask = torch.zeros(bsz, max_n, dtype=torch.float32)
-        pair_ligand_mask = torch.zeros(bsz, max_n, max_n, dtype=torch.float32)
         
         for i, sample in enumerate(batch):
             n = sample['seq'].size(0)
@@ -385,9 +506,7 @@ class DiscDataset(Dataset):
             seq_mask[i, :n] = sample['seq_mask']
             pair_mask[i, :n, :n] = sample['pair_mask']
             ligand_atoms[i, :n] = sample['ligand_atoms']
-            ligand_bonds[i, :n, :n] = sample['ligand_bonds']
             seq_ligand_mask[i, :n] = sample['seq_ligand_mask']
-            pair_ligand_mask[i, :n, :n] = sample['pair_ligand_mask']
 
         return {
             # inputs
@@ -398,10 +517,8 @@ class DiscDataset(Dataset):
             'seq_mask': seq_mask,
             'pair_mask': pair_mask,
             'seq_ligand_mask': seq_ligand_mask,
-            'pair_ligand_mask': pair_ligand_mask,
             # oututs
             'dist': dist,
             'ligand_atoms': ligand_atoms,
-            'ligand_bonds': ligand_bonds,
         }
 
