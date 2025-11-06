@@ -1,6 +1,6 @@
 # Project settings
 project = "yuel_design"
-exp_name = "cont"
+exp_name = "coords2"
 wandb_entity = None  # Set to your wandb username/team, or None for default
 enable_progress_bar = True
 
@@ -21,7 +21,7 @@ cache_dir = "cache"
 low_memory = False
 
 # Dataset settings
-num_workers = 4
+num_workers = 8
 
 # Model parameters
 diffusion_steps = 100
@@ -30,5 +30,5 @@ diffusion_noise_precision = 1e-5
 t_weight_power = 0.0
 n_blocks = 16
 hidden_nf = 64
-in_node_features = 122 # 3 (mol_types) + 1 (X) + 20 (protein cg atom types) + 79 (protein aa atom types) + 19 (ligand atoms)
-in_edge_features = 14 # 13 (distance) + 1 (is_same_residue)
+in_node_features = 72  # 3 (mol_types) + 69 (atom_one_hot: X + protein_atoms + ligand_elements)
+in_edge_features = 14  # 13 (edge_dist one-hot encoded: 0-12) + 1 (edge_attr: is_same_residue)

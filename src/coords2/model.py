@@ -65,7 +65,7 @@ def sigma_and_alpha_t_given_s(gamma_t: torch.Tensor, gamma_s: torch.Tensor, targ
 
     return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-class ContModel(torch.nn.Module):
+class CoordsModel(torch.nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         

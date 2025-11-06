@@ -9,14 +9,14 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.utils import pick_latest
 from src.lightning1 import LightningWrapper
-from src.cont.dataset import (
+from src.coords2.dataset import (
     parse_pocket,
     init_dist_to_coords_features,
     get_atom_one_hot,
 )
 
 def features_to_graph(features):
-    """Convert features dict to graph (reusing logic from ContDataset._to_torch)."""
+    """Convert features dict to graph (reusing logic from CoordsDataset._to_torch)."""
     import src.gnn as gnn
     from src import const
     
@@ -34,12 +34,12 @@ def features_to_graph(features):
     
     return g
 
-def load_disc_predictions(
+def load_coords_predictions(
     dist_matrix_file,
     ligand_atoms_file,
     ligand_bonds_file,
 ):
-    """Load disc project predictions from files.
+    """Load coords project predictions from files.
     
     Args:
         dist_matrix_file: Path to distance matrix file (numpy txt format, class indices)
@@ -67,20 +67,20 @@ def load_disc_predictions(
 
 
 @torch.no_grad()
-def run_cont_mode(
+def run_coords_mode(
     pocket_structure,
     dist_matrix,
     ligand_atoms,
     ligand_bonds,
-    cont_checkpoint: str = None,
+    coords_checkpoint: str = None,
     device: torch.device = None,
     seed: int = None,
 ):
-    """High-level coordinate generation using ContModel and disc project predictions.
+    """High-level coordinate generation using CoordsModel and coords project predictions.
     
     Args:
         pocket_structure: PDB string of protein pocket
-        dist_matrix: numpy array of distance matrix class indices (shape: n_ca_sc + ligand_size, n_ca_sc + ligand_size)
+        dist_matrix: numpy array of distance matrix class indices (shape: n_ca_ring + ligand_size, n_ca_ring + ligand_size)
         ligand_atoms: list or array of ligand atom names (strings like 'C', 'N', 'O')
         ligand_bonds: numpy array of ligand bonds class indices (shape: ligand_size, ligand_size)
         cont_checkpoint: Path to cont model checkpoint (None for auto-detection)
@@ -131,17 +131,50 @@ def run_cont_mode(
     # Store ligand atom names in pocket_info for later use in PDB saving
     pocket_info['ligand_atom_names'] = ligand_atoms
         
-    # Extract ligand-ligand part if ligand_bonds includes protein atoms
-    if ligand_bonds.shape[0] == protein_size + ligand_size:
-        ligand_bonds = ligand_bonds[protein_size:, protein_size:]
+    # Extract receptor residues and atoms corresponding to dist_matrix
+    # dist_matrix contains CA/ring centers (receptor) + ligand atoms
+    atom_names = pocket_info['atom_names']
+    res_ids = pocket_info['res_ids']
+    res_names = pocket_info['residue_names']
+    receptor_residues = []  # Will store residue names (3-letter codes)
+    receptor_atoms = []
+    for idx, (name, res_id, res_name) in enumerate(zip(atom_names, res_ids, res_names)):
+        if name == 'CA' or name.startswith('RING_'):
+            receptor_residues.append(res_name)  # Store residue name, not ID
+            receptor_atoms.append(name)
+    
+    # Convert receptor_residues and receptor_atoms to tuple format: [(res_name, [atom_names]), ...]
+    receptor_residues_tuples = []
+    current_res_name = None
+    current_atom_names = []
+    
+    for res_name, atom_name in zip(receptor_residues, receptor_atoms):
+        if current_res_name is None:
+            # First residue
+            current_res_name = res_name
+            current_atom_names = [atom_name]
+        elif res_name == current_res_name:
+            # Same residue, add to current atom list
+            current_atom_names.append(atom_name)
+        else:
+            # New residue, save previous and start new
+            receptor_residues_tuples.append((current_res_name, current_atom_names))
+            current_res_name = res_name
+            current_atom_names = [atom_name]
+    
+    # Don't forget the last residue
+    if current_res_name is not None:
+        receptor_residues_tuples.append((current_res_name, current_atom_names))
+    
+    # ligand_fixed_atoms corresponds to the ligand atoms in dist_matrix
+    ligand_fixed_atoms = ligand_atoms_str
     
     # Build features using disc predictions
     features = init_dist_to_coords_features(
-        pocket_info=pocket_info,
-        ligand_size=ligand_size,
         dist_matrix=dist_matrix,
-        ligand_bond_matrix=ligand_bonds,
-        ligand_atoms=ligand_atoms_str,
+        receptor_residues=receptor_residues_tuples,
+        ligand_fixed_atoms=ligand_fixed_atoms,
+        ligand_size=ligand_size,
     )
     
     # Add initial coordinates (use pocket coords + zero for ligand)
@@ -152,11 +185,11 @@ def run_cont_mode(
     graph = features_to_graph(features)
     graph = graph.to(device)
     
-    if cont_checkpoint is None:
-        cont_checkpoint = pick_latest(['checkpoints/*cont*/*.ckpt'])
+    if coords_checkpoint is None:
+        coords_checkpoint = pick_latest(['checkpoints/*coords2*/*.ckpt'])
     
-    print(f"Loading model from: {cont_checkpoint}")
-    model = LightningWrapper.load_from_checkpoint(cont_checkpoint, map_location='cpu')
+    print(f"Loading model from: {coords_checkpoint}")
+    model = LightningWrapper.load_from_checkpoint(coords_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)
     
@@ -170,7 +203,7 @@ def _ensure_parent(path: str):
 
 def save_coords_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
     """Save coordinates as PDB using pocket atom metadata; ligand atoms use placeholders.
-    coords: [N,3] tensor predicted by ContModel.
+    coords: [N,3] tensor predicted by CoordsModel.
     """
     from src.pdb_utils import pdb_line
 
@@ -184,13 +217,13 @@ def save_coords_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
 
     pocket_size = len(pocket_atom_names)
     with open(output_path, 'w') as f:
-        f.write("HEADER    CONT PREDICTION\n")
+        f.write("HEADER    COORDS2 PREDICTION\n")
         serial = 1
-        # Receptor atoms (skip side chain center atoms)
+        # Receptor atoms (skip ring center virtual atoms)
         for i in range(pocket_size):
             atom_name = pocket_atom_names[i] if i < len(pocket_atom_names) else 'CA'
-            # Skip side chain center atoms (end with '_SC')
-            if atom_name.endswith('_SC'):
+            # Skip ring center virtual atoms (start with 'RING_')
+            if atom_name.startswith('RING_'):
                 continue
             res_name = pocket_residue_names[i] if i < len(pocket_residue_names) else 'UNK'
             res_seq = (pocket_res_ids[i] if i < len(pocket_res_ids) else i) + 1
@@ -234,11 +267,11 @@ def save_coords_trajectory(chain: torch.Tensor, pocket_info: dict, output_path: 
         for idx, x in enumerate(frames):
             f.write(f"MODEL {idx+1:05d}\n")
             serial = 1
-            # Receptor (skip side chain center atoms)
+            # Receptor (skip ring center virtual atoms)
             for i in range(min(pocket_size, x.shape[0])):
                 atom_name = pocket_atom_names[i] if i < len(pocket_atom_names) else 'CA'
-                # Skip side chain center atoms (end with '_SC')
-                if atom_name.endswith('_SC'):
+                # Skip ring center virtual atoms (start with 'RING_')
+                if atom_name.startswith('RING_'):
                     continue
                 res_name = pocket_residue_names[i] if i < len(pocket_residue_names) else 'UNK'
                 res_seq = (pocket_res_ids[i] if i < len(pocket_res_ids) else i) + 1

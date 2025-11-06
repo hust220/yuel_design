@@ -49,7 +49,7 @@ def create_disc_predictions_from_mol(mol, pocket_info):
     """Create disc project predictions from molecule and pocket info.
     
     This simulates what disc project would output:
-    - dist_matrix: (n_ca_sc + ligand_size, n_ca_sc + ligand_size) - distance class indices
+    - dist_matrix: (n_ca_ring + ligand_size, n_ca_ring + ligand_size) - distance class indices
     - ligand_atoms: list of atom names (strings like 'C', 'N', 'O')
     - ligand_bonds: (ligand_size, ligand_size) - bond class indices
     """
@@ -57,14 +57,14 @@ def create_disc_predictions_from_mol(mol, pocket_info):
     ligand_atoms_names = [atom.replace('_', '') for atom in ligand_atoms_cont]
     ligand_size = len(ligand_atoms_names)
     
-    # Extract CA and SC coordinates from pocket (same logic as dataset.py)
+    # Extract CA and ring center coordinates from pocket (same logic as dataset.py)
     atom_names = pocket_info['atom_names']
-    ca_or_sc_coords = np.array([
+    ca_or_ring_coords = np.array([
         coord for coord, name in zip(pocket_info['coords'], atom_names)
-        if name == 'CA' or name.endswith('_SC')
+        if name == 'CA' or name.startswith('RING_')
     ])
     
-    dist_matrix = create_dist_matrix(ca_or_sc_coords, np.array(ligand_coords), discretization_config='b12')
+    dist_matrix = create_dist_matrix(ca_or_ring_coords, np.array(ligand_coords), discretization_config='b12')
     
     return dist_matrix, ligand_atoms_names, ligand_bond_matrix
 
