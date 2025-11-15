@@ -11,8 +11,8 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.cont.app import run_cont_mode, save_structure_pdb, save_trajectory
-from src.cont.dataset import (
+from src.ligand.app import run_ligand_mode, save_ligand_pdb, save_ligand_trajectory
+from src.ligand.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_interaction_index,
@@ -75,11 +75,11 @@ def create_int_index_from_mol(mol, pocket_info):
     return int_index, ligand_reduced_atoms, ligand_size
 
 
-def test_cont_mode(device):
-    """Test cont mode with interaction index - predicts all non-CA atoms"""
+def test_ligand_mode(device):
+    """Test ligand mode with interaction index"""
     while True:
         pocket_id, pocket_pdb, ligand_mol, ligand_name = get_random_moad_sample()
-        print(f"Testing cont mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
+        print(f"Testing ligand mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
         mol = read_molecule_from_molblock(ligand_mol)
         if mol:
             break
@@ -97,7 +97,7 @@ def test_cont_mode(device):
         print("Warning: int_index is empty, skipping this sample")
         return
     
-    final_prediction, chain, pocket_info = run_cont_mode(
+    final_prediction, chain, pocket_info = run_ligand_mode(
         pocket_structure=pocket_pdb,
         int_index=int_index,
         ligand_fixed_atoms=ligand_reduced_atoms,
@@ -106,7 +106,7 @@ def test_cont_mode(device):
     )
 
     import os
-    output_dir = f"test_outputs/cont_{pocket_id}"
+    output_dir = f"test_outputs/ligand_{pocket_id}"
     os.makedirs(output_dir, exist_ok=True)
 
     original_pdb_path = os.path.join(output_dir, "original_receptor.pdb")
@@ -119,30 +119,33 @@ def test_cont_mode(device):
 
     predicted_pdb_path = os.path.join(output_dir, "predicted.pdb")
     print(f"Saving predicted coordinates to {predicted_pdb_path}")
-    save_structure_pdb(final_prediction, pocket_info, predicted_pdb_path)
+    save_ligand_pdb(final_prediction, pocket_info, predicted_pdb_path)
 
     trajectory_path = os.path.join(output_dir, "trajectory.pdb")
     print(f"Saving trajectory to {trajectory_path}")
-    save_trajectory(chain, pocket_info, trajectory_path)
+    save_ligand_trajectory(chain, pocket_info, trajectory_path)
 
-    print(f"✓ Cont mode test passed! Generated coordinates with shape: {final_prediction.shape}")
-
-
+    print(f"✓ Ligand mode test passed! Generated coordinates with shape: {final_prediction.shape}")
 
 
-def test_cont_mode_with_dataset(device):
-    """Test using ContDataset to load data and ContModel to generate coordinates"""
-    from src.cont.dataset import ContDataset
-    from src.cont.model import ContModel
+
+
+def test_ligand_mode_with_dataset(device):
+    """Test using LigandDataset to load data and LigandModel to generate coordinates"""
+    from src.ligand.dataset import LigandDataset
+    from src.ligand.model import LigandModel
     from src.lightning1 import LightningWrapper
     from src.utils import pick_latest
     
-    dataset = ContDataset(split='train')
+    dataset = LigandDataset(split='train')
     data = dataset[0]
-    data = {k: v.to(device) for k, v in data.items()}
+    # Move all tensors to device
+    for key in data:
+        if isinstance(data[key], torch.Tensor):
+            data[key] = data[key].to(device)
     
-    cont_checkpoint = pick_latest(['checkpoints/*cont*/*.ckpt'])
-    model = LightningWrapper.load_from_checkpoint(cont_checkpoint, map_location='cpu')
+    ligand_checkpoint = pick_latest(['checkpoints/*ligand*/*.ckpt'])
+    model = LightningWrapper.load_from_checkpoint(ligand_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)
     
@@ -151,7 +154,7 @@ def test_cont_mode_with_dataset(device):
     
     assert final_prediction.shape[0] == data['x'].shape[0]
     assert final_prediction.shape[1] == 3
-    print(f"✓ Cont mode with dataset test passed! Generated coordinates with shape: {final_prediction.shape}")
+    print(f"✓ Ligand mode with dataset test passed! Generated coordinates with shape: {final_prediction.shape}")
 
 
 @pytest.fixture

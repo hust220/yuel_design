@@ -65,7 +65,7 @@ def sigma_and_alpha_t_given_s(gamma_t: torch.Tensor, gamma_s: torch.Tensor, targ
 
     return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-class CoordsModel(torch.nn.Module):
+class ContModel(torch.nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         
@@ -122,6 +122,8 @@ class CoordsModel(torch.nn.Module):
 
     def _egnn_forward(self, xt, t, graph):
         """Helper function to run EGNN forward pass"""
+        # Add time step to node_attr for flattened data
+        # t shape: [1], z shape: [N, F], node_mask shape: [N]
 
         h = graph.ndata['h'] # [n_nodes, n_node_features]
         edge_index = graph.edge_index # [2, n_edges]
@@ -134,12 +136,6 @@ class CoordsModel(torch.nn.Module):
         # ligand_bonds_one_hot = torch.nn.functional.one_hot(graph.edata['ligand_bonds'], num_classes=5).float()
         # edge_attr = torch.cat([edge_dist_one_hot, ligand_bonds_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
         edge_attr = torch.cat([edge_dist_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
-                
-        # Detach inputs before embedding to avoid unnecessary gradient computation
-        h = h.detach()
-        edge_attr = edge_attr.detach()
-        edge_index = edge_index.detach()
-        xt = xt.detach()
         
         h = self.embedding_node(h)
         e = self.embedding_edge(edge_attr)

@@ -1,16 +1,13 @@
 import os
 import numpy as np
-import pickle
 import torch
 
 from torch.utils.data import Dataset
 from rdkit import Chem
 from src import const
 from src.pdb_utils import Structure
-import src.gnn as gnn
 from src.cache import FileCache
 from src.db_utils import db_connection
-from src.distance_discretization import discretize_distance_numpy
 from src.const import PROTEIN_ATOM_TYPES
 from src.disc2.dataset import detect_ligand_rings
 
@@ -164,7 +161,7 @@ def parse_pocket(structure):
         'residues': residues,
     }
 
-def create_dist_to_coords_features(pocket_pdb, ligand_mol):
+def create_ligand_coords_features(pocket_pdb, ligand_mol, item_id=None):
     # Parse ligand molecule
     mol = Chem.MolFromMolBlock(ligand_mol)
     if mol is None:
@@ -190,143 +187,82 @@ def create_dist_to_coords_features(pocket_pdb, ligand_mol):
     receptor_reduced_coords = pocket_info['reduced_coords']
     receptor_full_coords = pocket_info['full_coords']
     
-    # Create distance matrix for reduced atoms (CA + non-C + ring centers) and ligand reduced atoms (non-C + ring centers)
-    dist_matrix = create_dist_matrix(receptor_reduced_coords, ligand_reduced_coords, discretization_config='b12')
+    # Create interaction index pairs between reduced atoms
+    # int_index contains (receptor_full_idx, ligand_full_idx) pairs
+    int_index = create_interaction_index(
+        receptor_reduced_coords=receptor_reduced_coords,
+        ligand_reduced_coords=ligand_reduced_coords,
+        receptor_atoms=receptor_atoms,
+    )
     
-    features = init_dist_to_coords_features(
-        dist_matrix=dist_matrix,
+    # Return None if int_index is empty
+    if len(int_index) == 0:
+        return None
+    
+    # Prepare full coordinates for distance calculation
+    full_coords = np.concatenate([receptor_full_coords, ligand_full_coords], axis=0)
+    
+    features = init_ligand_coords_features(
+        int_index=int_index,
         receptor_atoms=receptor_atoms,
         ligand_fixed_atoms=ligand_reduced_atoms,
         ligand_size=ligand_size
     )
-    features['x'] = np.concatenate([receptor_full_coords, ligand_full_coords], axis=0)
+    
+    features['x'] = full_coords.astype(np.float32)
 
     return features
 
-def init_dist_to_coords_features(dist_matrix, receptor_atoms, ligand_fixed_atoms, ligand_size):
-    """Initialize features from distance matrix and receptor/ligand information.
+def init_ligand_coords_features(int_index, receptor_atoms, ligand_fixed_atoms, ligand_size):
+    """Initialize features from interaction index and receptor/ligand information.
     
     Args:
-        dist_matrix: Reduced distance matrix with shape (n_reduced_receptor + n_ligand, n_reduced_receptor + n_ligand)
+        int_index: List of tuples, each tuple is (receptor_full_idx, ligand_full_idx)
+            representing interactions between reduced receptor and ligand atoms
+            but with indices in full atoms
         receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
             e.g., [(['CA', 'RING_6'], ['N', 'CA', 'C', 'O', 'CB', 'CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ', 'RING_6']), ...]
-        ligand_fixed_atoms: List of ligand atom types for ligand atoms in dist_matrix
+        ligand_fixed_atoms: List of ligand atom types for reduced ligand atoms
         ligand_size: Number of ligand atoms
     
     Returns:
-        dict with features including 'h', 'edge_index', 'edge_dist', 'edge_attr'
+        dict with features including 'h', 'edge_index', 'edge_attr', 'mask'
     """
-    # Calculate total number of reduced receptor atoms
-    n_reduced_receptor = sum(len(reduced_atoms) for reduced_atoms, _ in receptor_atoms)
-    assert n_reduced_receptor + len(ligand_fixed_atoms) == dist_matrix.shape[0], \
-        f"n_reduced_receptor ({n_reduced_receptor}) + ligand_fixed_atoms ({len(ligand_fixed_atoms)}) must equal dist_matrix.shape[0] ({dist_matrix.shape[0]})"
+    # Build full receptor atom list
+    full_receptor_atoms = []
+    for reduced_atoms, full_atoms in receptor_atoms:
+        full_receptor_atoms.extend(full_atoms)
     
-    # Expand distance matrix to include all receptor atoms
-    full_dist_matrix, full_receptor_atoms = expand_dist_matrix(
-        dist_matrix, receptor_atoms, ligand_size
-    )
+    n_receptor = len(full_receptor_atoms)
+    n_total = n_receptor + ligand_size
+    
     node_attr = build_nodes(full_receptor_atoms, ligand_fixed_atoms, ligand_size)
-    edge_index, edge_dist, edge_attr = build_edges(
-        dist_matrix=full_dist_matrix,
+    
+    # Build pair features
+    z_matrix = build_pair_features(
+        int_index=int_index,
         receptor_atoms=receptor_atoms,
         ligand_size=ligand_size
     )
     
+    # Create masks
+    mask = np.zeros(n_total, dtype=np.float32)
+    mask[:n_receptor] = 1.0
+    seq_mask = np.ones(n_total, dtype=np.float32)
+    pair_mask = np.ones((n_total, n_total), dtype=np.float32)
+    
     features = {
-        'h': node_attr,
-        'edge_index': edge_index,
-        'edge_dist': edge_dist,
-        'edge_attr': edge_attr,
+        'seq': node_attr.astype(np.float32),
+        'z': z_matrix.astype(np.float32),
+        'seq_mask': seq_mask,
+        'pair_mask': pair_mask,
+        'mask': mask,
     }
     
     return features
 
-def expand_dist_matrix(dist_matrix, receptor_atoms, ligand_size):
-    """Expand reduced distance matrix (CA, ring centers, ligand only) to full node set.
-    
-    dist_matrix has shape (n_reduced_receptor + n_reduced_ligand, n_reduced_receptor + n_reduced_ligand)
-    where n_reduced_receptor is the number of CA/ring centers, and n_reduced_ligand is the number of
-    ligand atoms in dist_matrix (typically fixed ligand atoms, which may be less than ligand_size).
-    Returns full matrix with shape (n_receptor + n_ligand, n_receptor + n_ligand)
-    where n_receptor is the total number of receptor atoms (CA + non-C atoms + C atoms + ring centers).
-    
-    Args:
-        dist_matrix: Reduced distance matrix with shape (n_reduced_receptor + n_reduced_ligand, ...)
-            where n_reduced_ligand <= ligand_size
-        receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
-            e.g., [(['CA', 'RING_6'], ['N', 'CA', 'C', 'O', 'CB', 'CG', 'CD1', 'CD2', 'CE1', 'CE2', 'CZ', 'RING_6']), ...]
-        ligand_size: Total number of ligand atoms (including atoms not in dist_matrix)
-    
-    Returns:
-        tuple: (full_dist_matrix, full_receptor_atoms)
-            full_dist_matrix: Full distance matrix with shape (n_receptor + n_ligand, n_receptor + n_ligand)
-            full_receptor_atoms: List of all receptor atom names
-    """
-    # Calculate total number of reduced receptor atoms
-    n_reduced_receptor = sum(len(reduced_atoms) for reduced_atoms, _ in receptor_atoms)
-    n_reduced_total = dist_matrix.shape[0]
-    n_reduced_ligand = n_reduced_total - n_reduced_receptor
-    assert n_reduced_ligand <= ligand_size, \
-        f"n_reduced_ligand ({n_reduced_ligand}) in dist_matrix must be <= ligand_size ({ligand_size})"
-    
-    # Build full receptor atom list and mapping from reduced to full indices
-    full_receptor_atoms = []
-    reduced_to_full_map = {}  # Map from reduced receptor index to full receptor index
-    
-    reduced_idx = 0
-    full_idx_offset = 0
-    
-    # Process each residue in receptor_atoms
-    for reduced_atoms, full_atoms in receptor_atoms:
-        # Build mapping from reduced atoms to full atoms
-        for atom_name in reduced_atoms:
-            if atom_name in full_atoms:
-                full_atom_idx = full_atoms.index(atom_name)
-                reduced_to_full_map[reduced_idx] = full_idx_offset + full_atom_idx
-            reduced_idx += 1
-        
-        # Add all full atoms to the full receptor atom list
-        for atom_name in full_atoms:
-            full_receptor_atoms.append(atom_name)
-            full_idx_offset += 1
-    
-    n_receptor = len(full_receptor_atoms)
-    n = n_receptor + ligand_size
-    full_dist_matrix = np.zeros((n, n), dtype=np.int64)
-    
-    # Build complete index mapping from reduced to full indices
-    full_indices = np.zeros(n_reduced_total, dtype=np.int64)
-    
-    # Map reduced receptor indices to full receptor indices
-    for i_reduced, i_full in reduced_to_full_map.items():
-        full_indices[i_reduced] = i_full
-    
-    # Map reduced ligand indices to full ligand indices
-    ligand_start = n_reduced_receptor
-    for i in range(n_reduced_ligand):
-        full_indices[ligand_start + i] = n_receptor + i
-    
-    # Use advanced indexing to copy all distances at once
-    i_reduced = np.arange(n_reduced_total)[:, None]
-    j_reduced = np.arange(n_reduced_total)[None, :]
-    i_full = full_indices[:, None]
-    j_full = full_indices[None, :]
-    full_dist_matrix[i_full, j_full] = dist_matrix[i_reduced, j_reduced] + 1
-    
-    return full_dist_matrix, full_receptor_atoms
-
-def build_edges(dist_matrix, receptor_atoms, ligand_size):
-    """Build graph edges from distance matrix.
-    Creates a fully connected graph with residue relationship features.
-    
-    Args:
-        dist_matrix: Distance matrix with shape (n_receptor + n_ligand, n_receptor + n_ligand)
-        receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
-        ligand_size: Number of ligand atoms
-    
-    Returns:
-        tuple: (edge_index, edge_dist, edge_attr)
-    """
+def build_pair_features(int_index, receptor_atoms, ligand_size):
+    """Build pair features tensor combining residue and interaction information."""
     # Build residue indices for each receptor atom
     res_indices = []
     for res_idx, (reduced_atoms, full_atoms) in enumerate(receptor_atoms):
@@ -334,30 +270,27 @@ def build_edges(dist_matrix, receptor_atoms, ligand_size):
     
     n_receptor = len(res_indices)
     n = n_receptor + ligand_size
-    assert dist_matrix.shape[0] == n, f"dist_matrix shape {dist_matrix.shape[0]} must equal n_receptor + ligand_size = {n}"
-    
-    edge_list, edge_dist, edge_attr = [], [], []
     
     # Extend residue indices for ligand (use -1 for ligand atoms)
-    res_indices = res_indices + [-1] * ligand_size
+    res_indices = np.array(res_indices + [-1] * ligand_size, dtype=np.int64)
+    
+    # Convert int_index to a set for fast lookup (both directions)
+    int_index_set = set(int_index)
+    int_index_set.update((lig_idx, rec_idx) for rec_idx, lig_idx in int_index)
+    
+    z = np.zeros((n, n, 2), dtype=np.float32)
     
     for i in range(n):
-        for j in range(i+1, n):
-            # Bidirectional edges
-            edge_list.append([i, j])
-            edge_list.append([j, i])
-            
-            # Store discrete distance from dist_matrix
-            discrete_dist = int(dist_matrix[i, j])
-            edge_dist.append(discrete_dist)
-            edge_dist.append(discrete_dist)
-            
+        for j in range(n):
+            if i == j:
+                continue
             res_i, res_j = res_indices[i], res_indices[j]
-            is_same_residue = 1 if res_i == res_j and res_i != -1 else 0
-            edge_attr.append([is_same_residue])
-            edge_attr.append([is_same_residue])
+            is_same_residue = 1.0 if (res_i == res_j and res_i != -1) else 0.0
+            is_interaction = 1.0 if (i, j) in int_index_set else 0.0
+            z[i, j, 0] = is_same_residue
+            z[i, j, 1] = is_interaction
     
-    return np.array(edge_list).T, np.array(edge_dist), np.array(edge_attr)
+    return z
 
 def build_nodes(receptor_atoms, ligand_fixed_atoms, ligand_size):
     """Build node attributes from receptor atoms and ligand fixed atoms.
@@ -446,40 +379,58 @@ def get_ligand_atoms_and_coords(mol):
     
     return reduced_atoms, np.array(reduced_coords), full_atoms, np.array(full_coords)
 
-def create_dist_matrix(receptor_coords, ligand_coords, discretization_config='b12'):
-    """Helper function to create distance matrix from coordinates.
+def create_interaction_index(receptor_reduced_coords, ligand_reduced_coords, receptor_atoms, interaction_threshold=5):
+    """Create interaction index pairs between reduced receptor and ligand atoms.
     
     Args:
-        receptor_coords: Array of receptor atom coordinates (CA and ring centers)
-        ligand_coords: Array of ligand atom coordinates
-        discretization_config: Distance discretization configuration
-        
+        receptor_reduced_coords: Array of reduced receptor atom coordinates (CA + non-C + ring centers)
+        ligand_reduced_coords: Array of reduced ligand atom coordinates (non-C + ring centers)
+        receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
+        interaction_threshold: Distance threshold for interaction (in Angstrom)
+    
     Returns:
-        Distance matrix with discretized distances between all receptor and ligand atoms
+        List of tuples: [(receptor_full_idx, ligand_full_idx), ...]
+            where indices are in full atoms (receptor full atoms + ligand full atoms)
     """
-    coords = np.concatenate([receptor_coords, ligand_coords], axis=0)
-
-    # Create distance matrix from coordinates
-    n = len(coords)
-    dist_matrix = np.zeros((n, n), dtype=np.int64)
+    # Build mapping from reduced receptor index to full receptor index
+    reduced_to_full_receptor = {}
+    reduced_idx = 0
+    full_idx_offset = 0
     
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                distance = np.linalg.norm(coords[i] - coords[j])
-                # Discretize distance using b12 configuration
-                discrete_dist = discretize_distance_numpy(distance, discretization_config)
-                dist_matrix[i, j] = discrete_dist
-            else:
-                dist_matrix[i, j] = 0  # self-distance
+    for reduced_atoms, full_atoms in receptor_atoms:
+        for atom_name in reduced_atoms:
+            if atom_name in full_atoms:
+                full_atom_idx = full_atoms.index(atom_name)
+                reduced_to_full_receptor[reduced_idx] = full_idx_offset + full_atom_idx
+            reduced_idx += 1
+        
+        full_idx_offset += len(full_atoms)
     
-    return dist_matrix
+    n_receptor_full = full_idx_offset
+    
+    # Ligand reduced atoms are already at the front in full_atoms
+    # So ligand reduced index i maps to ligand full index i
+    # Ligand full atoms: [reduced_atoms (n_reduced), C_atoms (n_c)]
+    # So reduced index i -> full index i
+    
+    # Calculate distances between reduced atoms
+    int_index = []
+    for i, rec_coord in enumerate(receptor_reduced_coords):
+        for j, lig_coord in enumerate(ligand_reduced_coords):
+            distance = np.linalg.norm(rec_coord - lig_coord)
+            if distance <= interaction_threshold:
+                # Map to full indices
+                rec_full_idx = reduced_to_full_receptor[i]
+                lig_full_idx = n_receptor_full + j  # ligand reduced atoms are at the front
+                int_index.append((rec_full_idx, lig_full_idx))
+    
+    return int_index
 
-class CoordsDataset(Dataset):
+class LigandDataset(Dataset):
     """Dataset for predicting continuous features from distance matrix."""
 
     def __init__(self, split='train', cache_mode='memory', cache_dir='cache'):
-        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='coords2')
+        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='ligand')
         self.split = split
         
         with db_connection() as conn:
@@ -516,7 +467,7 @@ class CoordsDataset(Dataset):
                         raise IndexError(f"Item with id {item_id} not found in database")
                     
                     ligand_name, pocket_pdb, ligand_mol = row
-                    features = create_dist_to_coords_features(pocket_pdb, ligand_mol)
+                    features = create_ligand_coords_features(pocket_pdb, ligand_mol, item_id=item_id)
                     if features is None:
                         # Skip this sample and try a random one
                         import random
@@ -529,37 +480,49 @@ class CoordsDataset(Dataset):
         return self._to_torch(features)
 
     @staticmethod
-    def features_to_graph(features):
-        """Convert features dict to graph.
-        
-        Args:
-            features: dict with keys 'x', 'edge_index', 'h', 'edge_dist', 'edge_attr'
-        
-        Returns:
-            DGL graph with node and edge data
-        """
-        x = torch.tensor(features['x'], dtype=const.TORCH_FLOAT)
-        edge_index = torch.tensor(features['edge_index'], dtype=torch.long)
-        
-        edge_dist = features['edge_dist']
-        
-        g = gnn.graph(edge_index, num_nodes=x.shape[0])
-        
-        g.ndata['x'] = x
-        g.ndata['h'] = torch.tensor(features['h'], dtype=const.TORCH_FLOAT)
-        
-        g.edata['edge_dist'] = torch.tensor(edge_dist, dtype=torch.long)
-        g.edata['edge_attr'] = torch.tensor(features['edge_attr'], dtype=torch.long)
-        
-        return g
+    def features_to_tensors(features):
+        """Convert features dict to tensor representation."""
+        return {
+            'x': torch.tensor(features['x'], dtype=const.TORCH_FLOAT),
+            'seq': torch.tensor(features['seq'], dtype=const.TORCH_FLOAT),
+            'z': torch.tensor(features['z'], dtype=const.TORCH_FLOAT),
+            'seq_mask': torch.tensor(features['seq_mask'], dtype=const.TORCH_FLOAT),
+            'pair_mask': torch.tensor(features['pair_mask'], dtype=const.TORCH_FLOAT),
+            'mask': torch.tensor(features['mask'], dtype=const.TORCH_FLOAT),
+        }
     
     def _to_torch(self, features):
-        return self.features_to_graph(features)
+        return self.features_to_tensors(features)
     
     @staticmethod
     def collate_fn(batch_data):
-        """Collate function for CoordsDataset using custom batch functionality"""
-        return gnn.batch(batch_data)
-
-
-
+        """Collate function for LigandDataset producing padded tensors."""
+        max_n = max(sample['seq'].size(0) for sample in batch_data)
+        batch_size = len(batch_data)
+        seq_dim = batch_data[0]['seq'].size(-1)
+        z_dim = batch_data[0]['z'].size(-1)
+        
+        seq = torch.zeros(batch_size, max_n, seq_dim, dtype=torch.float32)
+        z = torch.zeros(batch_size, max_n, max_n, z_dim, dtype=torch.float32)
+        seq_mask = torch.zeros(batch_size, max_n, dtype=torch.float32)
+        pair_mask = torch.zeros(batch_size, max_n, max_n, dtype=torch.float32)
+        mask = torch.zeros(batch_size, max_n, dtype=torch.float32)
+        x = torch.zeros(batch_size, max_n, 3, dtype=torch.float32)
+        
+        for i, sample in enumerate(batch_data):
+            n = sample['seq'].size(0)
+            seq[i, :n] = sample['seq']
+            z[i, :n, :n] = sample['z']
+            seq_mask[i, :n] = sample['seq_mask']
+            pair_mask[i, :n, :n] = sample['pair_mask']
+            mask[i, :n] = sample['mask']
+            x[i, :n] = sample['x']
+        
+        return {
+            'seq': seq,
+            'z': z,
+            'seq_mask': seq_mask,
+            'pair_mask': pair_mask,
+            'mask': mask,
+            'x': x,
+        }

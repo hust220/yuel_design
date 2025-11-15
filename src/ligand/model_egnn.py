@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 # Local imports
 from src.noise import GammaNetwork, PredefinedNoiseSchedule
-from src.e3attention import E3AttentionBlock
+from src.egnn import EGNN
 
 def expand_to_nodes(array, target):
     """
@@ -65,7 +65,7 @@ def sigma_and_alpha_t_given_s(gamma_t: torch.Tensor, gamma_s: torch.Tensor, targ
 
     return sigma2_t_given_s, sigma_t_given_s, alpha_t_given_s
 
-class CoordsModel(torch.nn.Module):
+class LigandModel(torch.nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
         
@@ -87,27 +87,28 @@ class CoordsModel(torch.nn.Module):
         in_node_features = kwargs['in_node_features']
         in_edge_features = kwargs['in_edge_features']
         
-        # 1. 节点特征嵌入层 (h: in_dim -> hidden_nf)
-        self.embedding_node = nn.Sequential(
-            Linear(in_node_features + 1, hidden_nf),
-            nn.SiLU(),
-            Linear(hidden_nf, hidden_nf)
-        )
-        
-        # 2. 边特征嵌入层 (e: in_dim -> hidden_nf)
-        # 注意：e 的输出维度必须与 GNN 层期望的 e 的维度 (hidden_nf) 一致。
-        self.embedding_edge = nn.Sequential(
-            Linear(in_edge_features, hidden_nf),
-            nn.SiLU(),
-            Linear(hidden_nf, hidden_nf)
-        )
-        
-        # 3. GNN 块列表
-        self.blocks = nn.ModuleList([
-            # 使用我们之前定义的注意力层
-            E3AttentionBlock(hidden_nf=hidden_nf)
-            for _ in range(self.n_blocks)
-        ])        
+        device = kwargs.get('device', 'cpu')
+        self.egnn = EGNN(
+            in_node_nf=in_node_features + 1,  # +1 for mask (concatenated in _egnn_forward)
+            hidden_nf=hidden_nf,
+            device=device,
+            activation=nn.SiLU(),
+            n_layers=1,
+            attention=False,
+            node_attr_nf=0,  # Not using node_attr
+            edge_feat_nf=in_edge_features,  # 2 for [is_same_residue, is_interaction]
+            norm_diff=True,
+            out_node_nf=in_node_features + 1,  # Output dimension matches input
+            tanh=False,
+            coords_range=15,
+            norm_constant=1,
+            inv_sublayers=self.n_blocks,
+            normalization_factor=100,
+            aggregation_method='sum',
+            bidirectional=False,
+            low_memory=kwargs.get('low_memory', False),
+            use_checkpoint=kwargs.get('use_checkpoint', False),
+        )        
 
     def sample_weighted_t(self, device):
         """使用加权采样来采样时间步 t,让更大的 t 值有更高的概率 - 单图版本"""
@@ -124,34 +125,35 @@ class CoordsModel(torch.nn.Module):
         """Helper function to run EGNN forward pass"""
 
         h = graph.ndata['h'] # [n_nodes, n_node_features]
+        mask = graph.ndata['mask'] # [n_nodes] - 1 for receptor atoms, 0 for ligand atoms
         edge_index = graph.edge_index # [2, n_edges]
-        edge_attr = graph.edata['edge_attr'] # [n_edges, n_edge_features]
+        edge_attr = graph.edata['edge_attr'] # [n_edges, 2] with [is_same_residue, is_interaction]
 
-        t_expanded = t.expand(h.shape[0], 1).to(h.device)  # [n_nodes, 1]
-        h = torch.cat([h, t_expanded], dim=1) # [n_nodes, n_node_features + 1]
-
-        edge_dist_one_hot = torch.nn.functional.one_hot(graph.edata['edge_dist'], num_classes=13).float()
-        # ligand_bonds_one_hot = torch.nn.functional.one_hot(graph.edata['ligand_bonds'], num_classes=5).float()
-        # edge_attr = torch.cat([edge_dist_one_hot, ligand_bonds_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
-        edge_attr = torch.cat([edge_dist_one_hot, edge_attr], dim=1) # [n_edges, n_edge_features + 12]
-                
-        # Detach inputs before embedding to avoid unnecessary gradient computation
-        h = h.detach()
-        edge_attr = edge_attr.detach()
-        edge_index = edge_index.detach()
-        xt = xt.detach()
+        # Concatenate mask and t to h
+        # t_expanded = t.expand(h.shape[0], 1).to(h.device)  # [n_nodes, 1]
+        mask_expanded = mask[:, None]  # [n_nodes, 1]
+        h = torch.cat([h, mask_expanded], dim=1) # [n_nodes, n_node_features + 1]
+        # h = torch.cat([h, mask_expanded, t_expanded], dim=1) # [n_nodes, n_node_features + 2]
         
-        h = self.embedding_node(h)
-        e = self.embedding_edge(edge_attr)
-        x = xt
-        for block in self.blocks:
-            h, x = block(h, x, e, edge_index)
-
-        return x - xt
+        x_in = xt.clone()  # Save input coordinates
+        h_out, x_out = self.egnn.forward(
+            h=h,
+            x=x_in,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+        )
+        
+        # Return coordinate update (dx)
+        # dx = x_out - x_in
+        return x_out
 
     def forward(self, graph, training=None):
         """Unified forward method that handles both raw data and preprocessed data"""
         x0 = graph.ndata['x']
+        fix_mask = graph.ndata['mask']
+
+        fix_center = x0[fix_mask == 1].mean(dim=0, keepdim=True)
+        x0 = x0 - fix_center
 
         # Sample t with weighted sampling (favoring larger t values)
         # For single graph, sample one time step
@@ -162,13 +164,14 @@ class CoordsModel(torch.nn.Module):
         sigma_t = sigma(gamma_t, x0)
 
         # Sample noise - treat as single graph
-        eps_t = torch.randn_like(x0)
+        eps_t = torch.randn_like(x0) * (1.0 - fix_mask[:, None])
 
         # Sample z_t given x, h for timestep t, from q(z_t | x, h)
         xt = alpha_t * x0 + sigma_t * eps_t
 
-        eps_t_hat = self._egnn_forward(xt, t, graph)
-        loss = ((eps_t - eps_t_hat) ** 2).sum(dim=1).mean()
+        dx = self._egnn_forward(xt / alpha_t, t, graph) * (1.0 - fix_mask[:, None])
+        n_nodes = (1.0 - fix_mask).sum()
+        loss = ((eps_t - dx * alpha_t / sigma_t) ** 2).sum() / n_nodes
         rmsd = torch.sqrt(loss)
 
         return {'loss': loss, 'rmsd': rmsd}
@@ -176,8 +179,13 @@ class CoordsModel(torch.nn.Module):
     @torch.no_grad()
     def sample_chain(self, graph, keep_frames=None):
         """Unified sample_chain method that handles raw data"""
-        h = graph.ndata['h']
-        x = torch.randn(h.shape[0], 3, device=h.device)
+        x0 = graph.ndata['x']
+        fix_mask = graph.ndata['mask'][:, None]
+        fix_mask_flat = fix_mask.squeeze()
+        fix_center = x0[fix_mask_flat == 1].mean(dim=0, keepdim=True)
+        x0 = x0 - fix_center
+        sample_mask = 1.0 - fix_mask
+        x = x0 * fix_mask + torch.randn_like(x0) * sample_mask
 
         chain = []
 
@@ -190,18 +198,22 @@ class CoordsModel(torch.nn.Module):
             s = s_val / self.T  # [1] - normalized time step
             t = t_val / self.T  # [1] - normalized time step
 
-            x = self.sample_p_zs_given_zt(s, t, x, graph)
-            x = x - x.mean(dim=0, keepdim=True)
+            gamma_t = expand_to_nodes(self.gamma(t), x)
+            alpha_t = alpha(gamma_t, x)
+            sigma_t = sigma(gamma_t, x)
 
-            chain.append(x)
+            x = alpha_t * x0 * fix_mask + x * (1.0 - fix_mask)
+            x = self.sample_p_zs_given_zt(s, t, x, graph, alpha_t, sigma_t)
+            chain.append(x+fix_center)
 
-        x = self.sample_p_xh_given_z0(x, graph)
-        chain.append(x)
+        # x = self.sample_p_xh_given_z0(x, graph)
+        # x = x0 * fix_mask + x * (1.0 - fix_mask)
+        # chain.append(x+fix_center)
 
         return chain[-1], torch.stack(chain, dim=0)
 
-    def sample_p_zs_given_zt(self, s, t, xt, graph):
-        """Samples from zs ~ p(zs | zt). Only used during sampling. Samples only linker features and coords"""
+    def sample_p_zs_given_zt(self, s, t, xt, graph, alpha_t, sigma_t):
+        """Samples from zs ~ p(zs | zt). """
         gamma_s = self.gamma(s)
         gamma_t = self.gamma(t)
 
@@ -210,7 +222,7 @@ class CoordsModel(torch.nn.Module):
         sigma_t = sigma(gamma_t, target_tensor=xt)
 
         # Neural net prediction
-        eps_hat = self._egnn_forward(xt, t, graph)
+        eps_hat = self._egnn_forward(xt / alpha_t, t, graph) * alpha_t / sigma_t
 
         # Compute mu for p(z_s | z_t)
         alpha_t_given_s = alpha_t_given_s[:, None]  
@@ -221,14 +233,14 @@ class CoordsModel(torch.nn.Module):
         # sigma_t_given_s: [N], sigma_s: [N, 1], sigma_t: [N, 1]
         sigma_t_given_s = sigma_t_given_s[:, None]  # [N] -> [N, 1] for broadcasting
         sigma_sampling = sigma_t_given_s * sigma_s / sigma_t # [N, 1]
-        eps = torch.randn_like(mu)# [N, F]
+        eps = torch.randn_like(mu) # [N, F]
         # eps: [N, F], sigma_sampling: [N, F], mu: [N, F]
         xt = mu + sigma_sampling * eps # [N, F]
 
         return xt
 
-    def sample_p_xh_given_z0(self, xt, graph):
-        """Samples x ~ p(x|z0). Samples only linker features and coords"""
+    def sample_p_xh_given_z0(self, xt, graph, alpha_t, sigma_t):
+        """Samples x ~ p(x|z0)."""
         zeros = torch.zeros(1, device=xt.device)  # [1] for single graph
         gamma_0 = self.gamma(zeros) # [1]
 

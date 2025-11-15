@@ -9,55 +9,34 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.utils import pick_latest
 from src.lightning1 import LightningWrapper
-from src.coords2.dataset import (
+from src.ligand.dataset import (
     parse_pocket,
-    init_dist_to_coords_features,
-    CoordsDataset,
+    init_ligand_coords_features,
+    LigandDataset,
+    create_interaction_index,
+    get_ligand_atoms_and_coords,
 )
-
-def load_coords_predictions(
-    dist_matrix_file,
-    ligand_atoms_file,
-):
-    """Load coords project predictions from files.
-    
-    Args:
-        dist_matrix_file: Path to distance matrix file (numpy txt format, class indices)
-        ligand_atoms_file: Path to ligand atoms file (text file, one atom name per line like 'C', 'N', 'O')
-    
-    Returns:
-        tuple: (dist_matrix, ligand_atoms)
-            - dist_matrix: numpy array of distance matrix class indices
-            - ligand_atoms: list of ligand atom names (strings)
-    """
-    # Load distance matrix (class indices)
-    dist_matrix = np.loadtxt(dist_matrix_file, dtype=np.int64)
-    
-    # Load ligand atoms (one name per line)
-    with open(ligand_atoms_file, 'r') as f:
-        lines = f.readlines()
-    ligand_atoms = [line.strip() for line in lines if line.strip()]
-    
-    return dist_matrix, ligand_atoms
 
 
 @torch.no_grad()
-def run_coords_mode(
+def run_ligand_mode(
     pocket_structure,
-    dist_matrix,
-    ligand_atoms,
+    int_index,
+    ligand_fixed_atoms,
     ligand_size,
-    coords_checkpoint: str = None,
+    ligand_checkpoint: str = None,
     device: torch.device = None,
     seed: int = None,
 ):
-    """High-level coordinate generation using CoordsModel and coords project predictions.
+    """High-level ligand coordinate generation using LigandModel.
     
     Args:
         pocket_structure: PDB string of protein pocket
-        dist_matrix: numpy array of distance matrix class indices (shape: n_ca_ring + ligand_size, n_ca_ring + ligand_size)
-        ligand_atoms: list or array of ligand atom names (strings like 'C', 'N', 'O')
-        coords_checkpoint: Path to coords model checkpoint (None for auto-detection)
+        int_index: List of tuples, each tuple is (receptor_full_idx, ligand_full_idx)
+            representing interactions between reduced receptor and ligand atoms
+        ligand_fixed_atoms: List of ligand reduced atom types (e.g., ['_O', '_N', '_C'])
+        ligand_size: Total number of ligand atoms (including C atoms)
+        ligand_checkpoint: Path to ligand model checkpoint (None for auto-detection)
         device: PyTorch device (None for auto-detection)
         seed: Random seed (None for random)
     
@@ -72,6 +51,7 @@ def run_coords_mode(
     
     if seed is not None:
         torch.manual_seed(seed)
+        np.random.seed(seed)
     
     from src.pdb_utils import Structure
     from io import StringIO
@@ -81,35 +61,44 @@ def run_coords_mode(
     structure.read(StringIO(pocket_structure))
     pocket_info = parse_pocket(structure)
     
-    # Convert inputs to correct types
-    dist_matrix = np.asarray(dist_matrix, dtype=np.int64)
-            
-    # Get full coords from pocket_info
-    protein_size = len(pocket_info['full_coords'])
+    # Prepare full coordinates: receptor uses original coords, ligand uses random coords
+    receptor_full_coords = pocket_info['full_coords']
+    n_receptor = len(receptor_full_coords)
     
-    features = init_dist_to_coords_features(
-        dist_matrix=dist_matrix,
+    # Initialize ligand coordinates randomly
+    ligand_coords = np.random.randn(ligand_size, 3).astype(np.float32)
+    
+    # Concatenate receptor and ligand coordinates
+    full_coords = np.concatenate([receptor_full_coords, ligand_coords], axis=0)
+    
+    # Initialize features
+    features = init_ligand_coords_features(
+        int_index=int_index,
         receptor_atoms=pocket_info['atoms'],
-        ligand_fixed_atoms=ligand_atoms,
-        ligand_size=ligand_size,
+        ligand_fixed_atoms=ligand_fixed_atoms,
+        ligand_size=ligand_size
     )
-    features['x'] = np.zeros((protein_size + ligand_size, 3))
+    features['x'] = full_coords
     
+    data = LigandDataset.features_to_tensors(features)
+    for key, value in data.items():
+        if isinstance(value, torch.Tensor):
+            data[key] = value.to(device)
     
-    graph = CoordsDataset.features_to_graph(features)
-    graph = graph.to(device)
+    if ligand_checkpoint is None:
+        ligand_checkpoint = pick_latest(['checkpoints/*ligand*/*.ckpt'])
     
-    if coords_checkpoint is None:
-        coords_checkpoint = pick_latest(['checkpoints/*coords2*/*.ckpt'])
-    
-    print(f"Loading model from: {coords_checkpoint}")
-    model = LightningWrapper.load_from_checkpoint(coords_checkpoint, map_location='cpu')
+    print(f"Loading model from: {ligand_checkpoint}")
+    model = LightningWrapper.load_from_checkpoint(ligand_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)
     
-    final_prediction, chain = model.sample_chain(graph=graph)
+    final_prediction, chain = model.sample_chain(data=data)
 
-    pocket_info['ligand_atom_names'] = ligand_atoms + ['_C'] * (ligand_size - len(ligand_atoms))
+    # Build ligand atom names list
+    ligand_atom_names = ligand_fixed_atoms + ['_C'] * (ligand_size - len(ligand_fixed_atoms))
+    pocket_info['ligand_atom_names'] = ligand_atom_names
+    
     return final_prediction, chain, pocket_info
 
 def _ensure_parent(path: str):
@@ -189,19 +178,19 @@ def _save_model(x: np.ndarray, pocket_info: dict, f, start_serial: int = 1):
     
     return serial
 
-def save_coords_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
+def save_ligand_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
     """Save coordinates as PDB using pocket atom metadata; ligand atoms use placeholders.
-    coords: [N,3] tensor predicted by CoordsModel.
+    coords: [N,3] tensor predicted by LigandModel.
     """
     _ensure_parent(output_path)
     x = coords.detach().cpu().numpy()
     
     with open(output_path, 'w') as f:
-        f.write("HEADER    COORDS2 PREDICTION\n")
+        f.write("HEADER    LIGAND PREDICTION\n")
         _save_model(x, pocket_info, f)
         f.write("END\n")
 
-def save_coords_trajectory(chain: torch.Tensor, pocket_info: dict, output_path: str):
+def save_ligand_trajectory(chain: torch.Tensor, pocket_info: dict, output_path: str):
     """Save coordinate trajectory (frames,N,3) into a multi-model PDB file."""
     _ensure_parent(output_path)
     

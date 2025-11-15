@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 # Local imports
 from src.noise import GammaNetwork, PredefinedNoiseSchedule
-from src.distformer import Distformer
+from src.e3former import E3former
 
 def expand_to_nodes(array, target):
     """
@@ -87,15 +87,25 @@ class ContModel(torch.nn.Module):
         in_node_features = kwargs['in_node_features']
         in_edge_features = kwargs['in_edge_features']
         
-        # Distformer initialization
-        self.distformer = Distformer(
-            n_blocks=self.n_blocks,
-            d_model=hidden_nf,
-            C_h=in_node_features + 2,  # +2 for mask and time
-            C_z=in_edge_features,  # edge features: [is_same_residue, is_interaction]
-            dim_feedforward=kwargs.get('dim_feedforward', 2048),
+        # E3former initialization
+        self.e3former = E3former(
+            seq_input_dim=in_node_features + 2,  # +2 for mask and time
+            z_input_dim=in_edge_features,
+            c_m=hidden_nf,
+            c_z=hidden_nf,
+            c_hidden_seq_att=kwargs.get('c_hidden_seq_att', hidden_nf // 2),
+            c_hidden_opm=kwargs.get('c_hidden_opm', hidden_nf // 2),
+            c_hidden_mul=kwargs.get('c_hidden_mul', hidden_nf // 2),
+            c_hidden_pair_att=kwargs.get('c_hidden_pair_att', hidden_nf // 2),
+            no_heads_seq=kwargs.get('no_heads_seq', 8),
+            no_heads_pair=kwargs.get('no_heads_pair', 4),
+            no_blocks=self.n_blocks,
+            transition_n=kwargs.get('transition_n', 4),
+            blocks_per_ckpt=kwargs.get('blocks_per_ckpt', self.n_blocks),
             eps=kwargs.get('eps', 1e-8),
-        )     
+        )
+        
+        self.chunk_size = kwargs.get('chunk_size', None)     
 
     def sample_weighted_t(self, device):
         # Compute weights and probabilities
@@ -132,7 +142,7 @@ class ContModel(torch.nn.Module):
         return fix_mean
 
     def model_predict(self, xt, t, data):
-        """Helper function to run Distformer forward pass
+        """Helper function to run E3former forward pass
         
         Args:
             xt: [batch_size, n, 3] - noisy coordinates
@@ -144,22 +154,25 @@ class ContModel(torch.nn.Module):
         """
         h = data['h']  # [batch_size, n, h_dim]
         mask = data['mask']  # [batch_size, n]
-        pair_mask = data['pair_mask']
         z = data['z']  # [batch_size, n, n, z_dim]
+        seq_mask = data['seq_mask']  # [batch_size, n]
+        pair_mask = data['pair_mask']  # [batch_size, n, n]
 
         batch_size, n_nodes = h.shape[0], h.shape[1]
         mask_expanded = mask.unsqueeze(-1).float()  # [batch_size, n, 1]
         t_expanded = t.expand(batch_size, n_nodes, 1).to(h.device)  # [batch_size, n, 1]
-        h = torch.cat([h, mask_expanded, t_expanded], dim=-1)  # [batch_size, n, h_dim + 2]
+        seq = torch.cat([h, mask_expanded, t_expanded], dim=-1)  # [batch_size, n, h_dim + 2]
         
         x_in = xt.clone()  # Save input coordinates
         
-        # Distformer forward: forward(h, x, z, mask) -> (h, x)
-        x_out = self.distformer.forward(
-            h=h,
+        # E3former forward: forward(seq, x, z, seq_mask, pair_mask, chunk_size) -> x
+        x_out = self.e3former.forward(
+            seq=seq,
             x=x_in,
             z=z,
-            mask=pair_mask,
+            seq_mask=seq_mask,
+            pair_mask=pair_mask,
+            chunk_size=self.chunk_size,
         )
         
         # Return coordinate update

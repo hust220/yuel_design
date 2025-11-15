@@ -11,8 +11,8 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.cont.app import run_cont_mode, save_structure_pdb, save_trajectory
-from src.cont.dataset import (
+from src.cont2.app import run_cont_mode, save_structure_pdb, save_trajectory
+from src.cont2.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_interaction_index,
@@ -106,7 +106,7 @@ def test_cont_mode(device):
     )
 
     import os
-    output_dir = f"test_outputs/cont_{pocket_id}"
+    output_dir = f"test_outputs/cont2_{pocket_id}"
     os.makedirs(output_dir, exist_ok=True)
 
     original_pdb_path = os.path.join(output_dir, "original_receptor.pdb")
@@ -132,8 +132,8 @@ def test_cont_mode(device):
 
 def test_cont_mode_with_dataset(device):
     """Test using ContDataset to load data and ContModel to generate coordinates"""
-    from src.cont.dataset import ContDataset
-    from src.cont.model import ContModel
+    from src.cont2.dataset import ContDataset
+    from src.cont2.model import ContModel
     from src.lightning1 import LightningWrapper
     from src.utils import pick_latest
     
@@ -141,7 +141,7 @@ def test_cont_mode_with_dataset(device):
     data = dataset[0]
     data = {k: v.to(device) for k, v in data.items()}
     
-    cont_checkpoint = pick_latest(['checkpoints/*cont*/*.ckpt'])
+    cont_checkpoint = pick_latest(['checkpoints/*cont2*/*.ckpt'])
     model = LightningWrapper.load_from_checkpoint(cont_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)

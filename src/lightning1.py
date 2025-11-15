@@ -2,7 +2,7 @@ import pytorch_lightning as pl
 import torch
 import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from typing import Dict, List, Optional
+from typing import Optional
 
 # Import dataset module for dynamic class loading
 from . import datasets
@@ -12,7 +12,7 @@ class LightningWrapper(pl.LightningModule):
     val_dataset = None
     test_dataset = None
     starting_epoch = None
-    metrics: Dict[str, List[float]] = {}
+    # Note: metrics tracking is handled by Lightning's self.log() - no need to manually store
 
     def __init__(self, model_class, **kwargs):
         super(LightningWrapper, self).__init__()
@@ -99,7 +99,7 @@ class LightningWrapper(pl.LightningModule):
 
         if self.log_iterations is not None and self.global_step % self.log_iterations == 0:
             for metric_name, metric in training_metrics.items():
-                self.metrics.setdefault(f'{metric_name}/train', []).append(metric)
+                # Lightning's self.log() automatically tracks metrics - no need to manually store
                 prog_bar = True if metric_name == 'loss' else False
                 self.log(f'{metric_name}/train', metric, prog_bar=prog_bar)
 
@@ -115,7 +115,7 @@ class LightningWrapper(pl.LightningModule):
     def on_validation_epoch_end(self):
         for metric in self.validation_step_outputs[0].keys():
             avg_metric = self.aggregate_metric(self.validation_step_outputs, metric)
-            self.metrics.setdefault(f'{metric}/val', []).append(avg_metric)
+            # Lightning's self.log() automatically tracks metrics - no need to manually store
             self.log(f'{metric}/val', avg_metric, prog_bar=False)
 
         self.validation_step_outputs = []
@@ -128,4 +128,5 @@ class LightningWrapper(pl.LightningModule):
 
     @staticmethod
     def aggregate_metric(step_outputs, metric):
-        return torch.tensor([out[metric] for out in step_outputs]).mean()
+        # Use torch.stack to avoid creating intermediate list and potential synchronization
+        return torch.stack([out[metric] for out in step_outputs]).mean()

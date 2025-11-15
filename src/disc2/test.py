@@ -11,13 +11,13 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.disc.app import (
+from src.disc2.app import (
     run_disc_mode, 
     save_predictions, 
     save_ligand_sdf_from_predictions,
     save_dist_matrix_gif,
 )
-from src.disc.dataset import (
+from src.disc2.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_dist_matrix,
@@ -119,21 +119,16 @@ def create_disc_predictions_from_mol(mol, pocket_info):
     This simulates ground truth data for comparison:
     - dist_matrix: (n_ca_sc + ligand_size, n_ca_sc + ligand_size) - distance class indices
     - ligand_atoms: list of atom class indices (integers)
-    - ligand_bonds: (ligand_size, ligand_size) - bond class indices
     """
-    ligand_atoms_idx, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
+    ligand_atoms_idx, ligand_coords = get_ligand_atoms_and_coords(mol, pocket_info)
     ligand_size = len(ligand_atoms_idx)
     
-    # Extract CA and SC coordinates from pocket (same logic as dataset.py)
-    atom_names = pocket_info['atom_names']
-    ca_or_sc_coords = np.array([
-        coord for coord, name in zip(pocket_info['coords'], atom_names)
-        if name == 'CA' or name.endswith('_SC')
-    ])
+    # Use all pocket coordinates (CA + non-C atoms + ring centers)
+    pocket_coords = np.array(pocket_info['coords'])
     
-    dist_matrix = create_dist_matrix(ca_or_sc_coords, np.array(ligand_coords), discretization_config='b12')
+    dist_matrix = create_dist_matrix(pocket_coords, np.array(ligand_coords), discretization_config='b12')
     
-    return dist_matrix, ligand_atoms_idx, ligand_bond_matrix
+    return dist_matrix, ligand_atoms_idx
 
 
 def test_disc_mode(device):
@@ -152,7 +147,7 @@ def test_disc_mode(device):
     pocket_info = parse_pocket(structure)
     
     # Get ligand info
-    ligand_atoms_idx, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
+    ligand_atoms_idx, ligand_coords = get_ligand_atoms_and_coords(mol, pocket_info)
     ligand_size = len(ligand_atoms_idx)
     
     # Run disc model to get predictions
@@ -164,21 +159,16 @@ def test_disc_mode(device):
     
     dist_matrix_pred = results['dist_matrix']
     ligand_atoms_pred = results['ligand_atoms']
-    ligand_bonds_pred = results['ligand_bonds']
     
     # Get ground truth for comparison
-    atom_names = pocket_info['atom_names']
-    ca_or_sc_coords = np.array([
-        coord for coord, name in zip(pocket_info['coords'], atom_names)
-        if name == 'CA' or name.endswith('_SC')
-    ])
-    dist_matrix_gt = create_dist_matrix(ca_or_sc_coords, np.array(ligand_coords), discretization_config='b12')
+    # Use all pocket coordinates (CA + non-C atoms + ring centers)
+    pocket_coords = np.array(pocket_info['coords'])
+    dist_matrix_gt = create_dist_matrix(pocket_coords, np.array(ligand_coords), discretization_config='b12')
     
     # Print statistics
     print(f"✓ Disc mode test passed!")
     print(f"  Distance matrix shape: {dist_matrix_pred.shape}")
     print(f"  Ligand atoms shape: {ligand_atoms_pred.shape}")
-    print(f"  Ligand bonds shape: {ligand_bonds_pred.shape}")
     print(f"  Chain length: {len(chain)}")
     print(f"  Pocket atoms: {len(pocket_info['coords'])}")
     
@@ -196,15 +186,7 @@ def test_disc_mode(device):
         f.write(ligand_mol)
     
     # Save basic predictions
-    save_predictions(dist_matrix_pred, ligand_atoms_pred, ligand_bonds_pred, output_dir)
-    
-    # Save ligand SDF (with dummy coordinates for now)
-    predicted_ligand_sdf_path = os.path.join(output_dir, "predicted_ligand.sdf")
-    save_ligand_sdf_from_predictions(
-        ligand_atoms=ligand_atoms_pred,
-        ligand_bonds=ligand_bonds_pred,
-        output_path=predicted_ligand_sdf_path,
-    )
+    save_predictions(dist_matrix_pred, ligand_atoms_pred, output_dir)
     
     # Save distance matrix GIF
     gif_path = os.path.join(output_dir, "dist_matrix_diffusion.gif")
@@ -217,7 +199,7 @@ def test_disc_mode(device):
 
 def test_disc_mode_with_dataset(device):
     """Test using DiscDataset to load data and DiscModel to generate predictions"""
-    from src.disc.dataset import DiscDataset
+    from src.disc2.dataset import DiscDataset
     from src.lightning1 import LightningWrapper
     from src.utils import pick_latest
     
@@ -238,11 +220,10 @@ def test_disc_mode_with_dataset(device):
     
     assert 'dist' in final_predictions
     assert 'atoms' in final_predictions
-    assert 'bonds' in final_predictions
+    # Note: model doesn't predict bonds
     print(f"✓ Disc mode with dataset test passed! Generated predictions")
     print(f"  Dist shape: {final_predictions['dist'][0].shape}")
     print(f"  Atoms shape: {final_predictions['atoms'][0].shape}")
-    print(f"  Bonds shape: {final_predictions['bonds'][0].shape}")
 
 
 @pytest.fixture

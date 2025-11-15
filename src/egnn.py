@@ -282,7 +282,7 @@ class EGNN(nn.Module):
         # Add node type embedding
         self.node_type_embedding = nn.Embedding(2, hidden_nf)  # 2 types: movable and fixed
         
-        self.embedding = nn.Linear(in_node_nf + node_attr_nf + hidden_nf, self.hidden_nf)  # +hidden_nf for type embedding
+        self.embedding = nn.Linear(in_node_nf + node_attr_nf, self.hidden_nf)  # +hidden_nf for type embedding
         self.embedding_out = nn.Linear(self.hidden_nf, out_node_nf)
         for i in range(0, n_layers):
             self.add_module("e_block_%d" % i, EquivariantBlock(hidden_nf, edge_feat_nf=edge_feat_nf, device=device,
@@ -297,19 +297,13 @@ class EGNN(nn.Module):
         else:
             self.to('cpu')
 
-    def forward(self, h, x, edge_index, edge_attr, node_attr=None, node_mask=None, free_mask=None, edge_mask=None):
+    def forward(self, h, x, edge_index, edge_attr, node_attr=None, node_mask=None, edge_mask=None):
         distances, _ = coord2diff(x, edge_index)
         edge_attr = torch.cat([distances, edge_attr], dim=1)
 
         if self.node_attr_nf > 0:
             h = torch.cat([h, node_attr], dim=1)
             
-        # Add node type embedding using free_mask
-        if free_mask is not None:
-            node_types = free_mask.squeeze(-1).long()  # Convert to long for embedding
-            type_embedding = self.node_type_embedding(node_types)
-            h = torch.cat([h, type_embedding], dim=1)
-
         h = self.embedding(h)
         
         # Define checkpoint wrapper function outside the loop

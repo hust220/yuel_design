@@ -11,11 +11,13 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.coords2.app import run_coords_mode, save_coords_pdb, save_coords_trajectory, load_coords_predictions
-from src.coords2.dataset import (
+from src.cont.app import run_cont_mode, save_coords_pdb, save_coords_trajectory, load_disc_predictions
+from src.cont.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_dist_matrix,
+    get_ligand_bond_type,
+    LIGAND_BOND_TYPE2IDX,
 )
 
 def get_random_moad_sample():
@@ -47,27 +49,31 @@ def create_disc_predictions_from_mol(mol, pocket_info):
     """Create disc project predictions from molecule and pocket info.
     
     This simulates what disc project would output:
-    - dist_matrix: (n_ca_ring + ligand_size, n_ca_ring + ligand_size) - distance class indices
+    - dist_matrix: (n_ca_sc + ligand_size, n_ca_sc + ligand_size) - distance class indices
     - ligand_atoms: list of atom names (strings like 'C', 'N', 'O')
+    - ligand_bonds: (ligand_size, ligand_size) - bond class indices
     """
-    ligand_reduced_atoms, ligand_reduced_coords, ligand_full_atoms, ligand_full_coords = get_ligand_atoms_and_coords(mol)
+    ligand_atoms_cont, ligand_coords, ligand_bond_matrix = get_ligand_atoms_and_coords(mol)
+    ligand_atoms_names = [atom.replace('_', '') for atom in ligand_atoms_cont]
+    ligand_size = len(ligand_atoms_names)
     
-    print(f"Ligand reduced atoms: {ligand_reduced_atoms}")
-    print(f"Ligand full atoms: {ligand_full_atoms}")
-
-    # Extract reduced coords (CA and ring centers) from pocket
-    receptor_reduced_coords = pocket_info['reduced_coords']
+    # Extract CA and SC coordinates from pocket (same logic as dataset.py)
+    atom_names = pocket_info['atom_names']
+    ca_or_sc_coords = np.array([
+        coord for coord, name in zip(pocket_info['coords'], atom_names)
+        if name == 'CA' or name.endswith('_SC')
+    ])
     
-    dist_matrix = create_dist_matrix(receptor_reduced_coords, np.array(ligand_reduced_coords), discretization_config='b12')
+    dist_matrix = create_dist_matrix(ca_or_sc_coords, np.array(ligand_coords), discretization_config='b12')
     
-    return dist_matrix, ligand_reduced_atoms
+    return dist_matrix, ligand_atoms_names, ligand_bond_matrix
 
 
-def test_coords_mode(device):
-    """Test coords mode with disc project predictions"""
+def test_cont_mode(device):
+    """Test cont mode with disc project predictions"""
     while True:
         pocket_id, pocket_pdb, ligand_mol, ligand_name = get_random_moad_sample()
-        print(f"Testing coords mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
+        print(f"Testing cont mode with MOAD sample: {pocket_id}, ligand: {ligand_name}")
         mol = read_molecule_from_molblock(ligand_mol)
         if mol:
             break
@@ -79,18 +85,18 @@ def test_coords_mode(device):
     pocket_info = parse_pocket(structure)
     
     # Create disc project predictions
-    dist_matrix, ligand_atoms = create_disc_predictions_from_mol(mol, pocket_info)
+    dist_matrix, ligand_atoms_names, ligand_bonds = create_disc_predictions_from_mol(mol, pocket_info)
     
-    final_prediction, chain, pocket_info = run_coords_mode(
+    final_prediction, chain, pocket_info = run_cont_mode(
         pocket_structure=pocket_pdb,
         dist_matrix=dist_matrix,
-        ligand_atoms=ligand_atoms,
-        ligand_size=len(ligand_atoms)+15,
+        ligand_atoms=ligand_atoms_names,
+        ligand_bonds=ligand_bonds,
         device=device,
     )
 
     import os
-    output_dir = f"test_outputs/coords2_{pocket_id}"
+    output_dir = f"test_outputs/cont_{pocket_id}"
     os.makedirs(output_dir, exist_ok=True)
 
     original_pdb_path = os.path.join(output_dir, "original_receptor.pdb")
@@ -109,14 +115,16 @@ def test_coords_mode(device):
     print(f"Saving trajectory to {trajectory_path}")
     save_coords_trajectory(chain, pocket_info, trajectory_path)
 
-    print(f"✓ Coords mode test passed! Generated coordinates with shape: {final_prediction.shape}")
+    print(f"✓ Cont mode test passed! Generated coordinates with shape: {final_prediction.shape}")
+    print(f"  Chain length: {len(chain)}")
+    print(f"  Pocket atoms: {len(pocket_info['coords'])}")
 
 
-def test_coords_mode_with_files(device):
-    """Test coords mode with disc project prediction files"""
+def test_cont_mode_with_files(device):
+    """Test cont mode with disc project prediction files"""
     while True:
         pocket_id, pocket_pdb, ligand_mol, ligand_name = get_random_moad_sample()
-        print(f"Testing coords mode with files: {pocket_id}, ligand: {ligand_name}")
+        print(f"Testing cont mode with files: {pocket_id}, ligand: {ligand_name}")
         mol = read_molecule_from_molblock(ligand_mol)
         if mol:
             break
@@ -128,12 +136,13 @@ def test_coords_mode_with_files(device):
     pocket_info = parse_pocket(structure)
     
     # Create disc project predictions
-    dist_matrix, ligand_atoms_names = create_disc_predictions_from_mol(mol, pocket_info)
+    dist_matrix, ligand_atoms_names, ligand_bonds = create_disc_predictions_from_mol(mol, pocket_info)
     
     # Create temporary files to simulate disc project output
     with tempfile.TemporaryDirectory() as tmpdir:
         dist_matrix_file = os.path.join(tmpdir, "dist_matrix.txt")
         ligand_atoms_file = os.path.join(tmpdir, "ligand_atoms.txt")
+        ligand_bonds_file = os.path.join(tmpdir, "ligand_bonds.txt")
         
         # Save distance matrix (class indices)
         np.savetxt(dist_matrix_file, dist_matrix, fmt='%d')
@@ -143,37 +152,42 @@ def test_coords_mode_with_files(device):
             for atom_name in ligand_atoms_names:
                 f.write(f"{atom_name}\n")
         
-        dist_matrix, ligand_atoms = load_coords_predictions(
+        # Save ligand bonds (class indices)
+        np.savetxt(ligand_bonds_file, ligand_bonds, fmt='%d')
+        
+        dist_matrix, ligand_atoms, ligand_bonds = load_disc_predictions(
             dist_matrix_file,
             ligand_atoms_file,
+            ligand_bonds_file,
         )
         
-        final_prediction, chain, pocket_info = run_coords_mode(
+        final_prediction, chain, pocket_info = run_cont_mode(
             pocket_structure=pocket_pdb,
             dist_matrix=dist_matrix,
             ligand_atoms=ligand_atoms,
+            ligand_bonds=ligand_bonds,
             device=device,
         )
         
         assert final_prediction.shape[0] == len(pocket_info['coords']) + len(ligand_atoms_names)
         assert final_prediction.shape[1] == 3
-        print(f"✓ Coords mode with files test passed! Generated coordinates with shape: {final_prediction.shape}")
+        print(f"✓ Cont mode with files test passed! Generated coordinates with shape: {final_prediction.shape}")
 
 
-def test_coords_mode_with_dataset(device):
-    """Test using CoordsDataset to load data and CoordsModel to generate coordinates"""
-    from src.coords2.dataset import CoordsDataset
-    from src.coords2.model import CoordsModel
+def test_cont_mode_with_dataset(device):
+    """Test using ContDataset to load data and ContModel to generate coordinates"""
+    from src.cont.dataset import ContDataset
+    from src.cont.model import ContModel
     from src.lightning1 import LightningWrapper
     from src.utils import pick_latest
     import src.gnn as gnn
     
-    dataset = CoordsDataset(split='train')
+    dataset = ContDataset(split='train')
     graph = dataset[0]
     graph = graph.to(device)
     
-    coords_checkpoint = pick_latest(['checkpoints/*coords2*/*.ckpt'])
-    model = LightningWrapper.load_from_checkpoint(coords_checkpoint, map_location='cpu')
+    cont_checkpoint = pick_latest(['checkpoints/*cont*/*.ckpt'])
+    model = LightningWrapper.load_from_checkpoint(cont_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)
     
@@ -182,7 +196,7 @@ def test_coords_mode_with_dataset(device):
     
     assert final_prediction.shape[0] == graph.ndata['x'].shape[0]
     assert final_prediction.shape[1] == 3
-    print(f"✓ Coords mode with dataset test passed! Generated coordinates with shape: {final_prediction.shape}")
+    print(f"✓ Cont mode with dataset test passed! Generated coordinates with shape: {final_prediction.shape}")
 
 
 @pytest.fixture

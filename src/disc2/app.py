@@ -8,13 +8,12 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.utils import pick_latest
 from src.lightning1 import LightningWrapper
-from src.disc.dataset import (
+from src.disc2.dataset import (
     parse_pocket,
     init_dist_features,
     LIGAND_ATOM_TYPES,
     LIGAND_BOND_TYPES,
 )
-
 
 @torch.no_grad()
 def run_disc_mode(
@@ -38,7 +37,6 @@ def run_disc_mode(
             - results: dict with predicted values
                 - 'dist_matrix': [N, N] tensor of predicted distance class indices
                 - 'ligand_atoms': [ligand_size] tensor of predicted ligand atom class indices  
-                - 'ligand_bonds': [ligand_size, ligand_size] tensor of predicted ligand bond class indices
             - chain: list of dicts containing all diffusion steps
             - pocket_info: dict with pocket metadata
     """
@@ -67,7 +65,6 @@ def run_disc_mode(
         'seq_mask': torch.tensor(features['seq_mask'], dtype=torch.float32).unsqueeze(0),
         'pair_mask': torch.tensor(features['pair_mask'], dtype=torch.float32).unsqueeze(0),
         'seq_ligand_mask': torch.tensor(features['seq_ligand_mask'], dtype=torch.float32).unsqueeze(0),
-        'pair_ligand_mask': torch.tensor(features['pair_ligand_mask'], dtype=torch.float32).unsqueeze(0),
     }
     
     # Move to device
@@ -75,7 +72,7 @@ def run_disc_mode(
         data[key] = data[key].to(device)
     
     if disc_checkpoint is None:
-        disc_checkpoint = pick_latest(['checkpoints/*disc*/*.ckpt'])
+        disc_checkpoint = pick_latest(['checkpoints/*disc2*/*.ckpt'])
     
     print(f"Loading model from: {disc_checkpoint}")
     model = LightningWrapper.load_from_checkpoint(disc_checkpoint, map_location='cpu')
@@ -85,7 +82,7 @@ def run_disc_mode(
     final_predictions, chain = model.sample_chain(data=data)
     
     # Extract predictions
-    # final_predictions is a dict with 'dist', 'atoms', 'bonds'
+    # final_predictions is a dict with 'dist', 'atoms' (model doesn't predict bonds)
     protein_size = len(pocket_info['coords'])
     
     # Process chain to match results format
@@ -94,7 +91,6 @@ def run_disc_mode(
         processed_step = {
             'dist_matrix': step_dict['dist'][0].view(protein_size + ligand_size, protein_size + ligand_size).cpu(),
             'ligand_atoms': step_dict['atoms'][0, protein_size:].cpu(),
-            'ligand_bonds': step_dict['bonds'][0].view(protein_size + ligand_size, protein_size + ligand_size)[protein_size:, protein_size:].cpu(),
         }
         processed_chain.append(processed_step)
     
@@ -102,7 +98,6 @@ def run_disc_mode(
     results = {
         'dist_matrix': final_predictions['dist'][0].view(protein_size + ligand_size, protein_size + ligand_size).cpu(),
         'ligand_atoms': final_predictions['atoms'][0, protein_size:].cpu(),
-        'ligand_bonds': final_predictions['bonds'][0].view(protein_size + ligand_size, protein_size + ligand_size)[protein_size:, protein_size:].cpu(),
     }
     
     return results, processed_chain, pocket_info
@@ -111,8 +106,7 @@ def run_disc_mode(
 def save_predictions(
     dist_matrix,
     ligand_atoms,
-    ligand_bonds,
-    output_dir,
+    output_dir=None,
     prefix="disc",
 ):
     """Save disc predictions to files.
@@ -120,7 +114,6 @@ def save_predictions(
     Args:
         dist_matrix: [N, N] numpy array or tensor of distance class indices
         ligand_atoms: [ligand_size] numpy array or tensor of ligand atom class indices  
-        ligand_bonds: [ligand_size, ligand_size] numpy array or tensor of ligand bond class indices
         output_dir: Directory to save files
         prefix: Prefix for output filenames
     """
@@ -131,13 +124,10 @@ def save_predictions(
         dist_matrix = dist_matrix.cpu().numpy()
     if isinstance(ligand_atoms, torch.Tensor):
         ligand_atoms = ligand_atoms.cpu().numpy()
-    if isinstance(ligand_bonds, torch.Tensor):
-        ligand_bonds = ligand_bonds.cpu().numpy()
     
     # Ensure integer type
     dist_matrix = dist_matrix.astype(np.int64)
     ligand_atoms = ligand_atoms.astype(np.int64)
-    ligand_bonds = ligand_bonds.astype(np.int64)
     
     # Save distance matrix
     dist_file = os.path.join(output_dir, f"{prefix}_dist_matrix.txt")
@@ -148,11 +138,6 @@ def save_predictions(
     atoms_file = os.path.join(output_dir, f"{prefix}_ligand_atoms_classes.txt")
     np.savetxt(atoms_file, ligand_atoms, fmt='%d')
     print(f"Saved ligand atoms to {atoms_file}")
-    
-    # Save ligand bonds
-    bonds_file = os.path.join(output_dir, f"{prefix}_ligand_bonds.txt")
-    np.savetxt(bonds_file, ligand_bonds, fmt='%d')
-    print(f"Saved ligand bonds to {bonds_file}")
     
     # Also save ligand atoms as names (for convenience)
     atoms_names_file = os.path.join(output_dir, f"{prefix}_ligand_atoms_names.txt")
@@ -229,6 +214,43 @@ def save_ligand_sdf_from_predictions(
     # Save as SDF
     Chem.MolToMolFile(mol, output_path)
     print(f"Saved ligand SDF to {output_path}")
+
+
+def save_dist_matrix_png(dist_matrix, output_path, title="Distance Matrix", dpi=100):
+    """Save distance matrix as PNG image.
+    
+    Args:
+        dist_matrix: [N, N] numpy array or tensor of distance class indices
+        output_path: Path to save PNG file
+        title: Title for the plot
+        dpi: Dots per inch
+    """
+    import matplotlib.pyplot as plt
+    
+    _ensure_parent(output_path)
+    
+    # Convert to numpy if needed
+    if isinstance(dist_matrix, torch.Tensor):
+        dist_matrix = dist_matrix.cpu().numpy()
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Plot distance matrix
+    im = ax.imshow(dist_matrix, cmap='viridis', aspect='equal')
+    ax.set_title(title)
+    ax.set_xlabel('Atom Index')
+    ax.set_ylabel('Atom Index')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label('Distance Class')
+    
+    # Save as PNG
+    plt.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"Saved distance matrix PNG to {output_path}")
 
 
 def save_dist_matrix_gif(chain, output_path, title="Distance Matrix Diffusion", fps=10, dpi=100):

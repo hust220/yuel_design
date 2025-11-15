@@ -105,6 +105,10 @@ class Logger(object):
         # you might want to specify some extra behavior here.
         pass
 
+    def isatty(self):
+        # delegate to underlying terminal's isatty() for TTY detection
+        return self.terminal.isatty() if hasattr(self.terminal, 'isatty') else False
+
 
 def log(*args):
     print(f'[{datetime.now()}]', *args)

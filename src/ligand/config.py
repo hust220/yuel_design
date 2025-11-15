@@ -1,6 +1,6 @@
 # Project settings
 project = "yuel_design"
-exp_name = "cont"
+exp_name = "ligand"
 wandb_entity = None  # Set to your wandb username/team, or None for default
 enable_progress_bar = True
 
@@ -21,7 +21,7 @@ cache_dir = "cache"
 low_memory = False
 
 # Dataset settings
-num_workers = 4  # Will become useful with larger batch_size
+num_workers = 8  # Will become useful with larger batch_size
 
 # Model parameters
 diffusion_steps = 100
@@ -29,10 +29,13 @@ diffusion_noise_schedule = 'polynomial_2'
 diffusion_noise_precision = 1e-5
 t_weight_power = 0.0
 
-# Distformer parameters
-n_blocks = 8  # Number of DistAttention blocks
-hidden_nf = 64  # d_model: latent dimension for Distformer
+# E3former parameters
+n_blocks = 8  # Number of E3former blocks
+hidden_nf = 64  # Latent dimension for sequence/pair representations
 in_node_features = 72  # 3 (mol_types) + 69 (atom_one_hot: X + protein_atoms + ligand_elements)
-in_edge_features = 2  # z: [is_same_residue, is_interaction]
-dim_feedforward = 256  # FFN hidden dimension in DistAttention
-eps = 1e-8  # Numerical stability parameter
+in_edge_features = 2  # pair features: [is_same_residue, is_interaction]
+no_heads_seq = 4
+no_heads_pair = 2
+transition_n = 4
+blocks_per_ckpt = 4
+chunk_size = 4

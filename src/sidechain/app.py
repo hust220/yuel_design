@@ -1,5 +1,4 @@
 import os
-import glob
 import torch
 import numpy as np
 import sys
@@ -9,55 +8,28 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.utils import pick_latest
 from src.lightning1 import LightningWrapper
-from src.coords2.dataset import (
+from src.sidechain.dataset import (
     parse_pocket,
-    init_dist_to_coords_features,
-    CoordsDataset,
+    init_receptor_features,
+    expand_dist_matrix,
+    SidechainDataset,
 )
 
-def load_coords_predictions(
-    dist_matrix_file,
-    ligand_atoms_file,
-):
-    """Load coords project predictions from files.
-    
-    Args:
-        dist_matrix_file: Path to distance matrix file (numpy txt format, class indices)
-        ligand_atoms_file: Path to ligand atoms file (text file, one atom name per line like 'C', 'N', 'O')
-    
-    Returns:
-        tuple: (dist_matrix, ligand_atoms)
-            - dist_matrix: numpy array of distance matrix class indices
-            - ligand_atoms: list of ligand atom names (strings)
-    """
-    # Load distance matrix (class indices)
-    dist_matrix = np.loadtxt(dist_matrix_file, dtype=np.int64)
-    
-    # Load ligand atoms (one name per line)
-    with open(ligand_atoms_file, 'r') as f:
-        lines = f.readlines()
-    ligand_atoms = [line.strip() for line in lines if line.strip()]
-    
-    return dist_matrix, ligand_atoms
-
-
 @torch.no_grad()
-def run_coords_mode(
+def run_sidechain_mode(
     pocket_structure,
     dist_matrix,
-    ligand_atoms,
-    ligand_size,
-    coords_checkpoint: str = None,
+    sidechain_checkpoint: str = None,
     device: torch.device = None,
     seed: int = None,
 ):
-    """High-level coordinate generation using CoordsModel and coords project predictions.
+    """High-level sidechain coordinate generation using SidechainModel.
     
     Args:
-        pocket_structure: PDB string of protein pocket
-        dist_matrix: numpy array of distance matrix class indices (shape: n_ca_ring + ligand_size, n_ca_ring + ligand_size)
-        ligand_atoms: list or array of ligand atom names (strings like 'C', 'N', 'O')
-        coords_checkpoint: Path to coords model checkpoint (None for auto-detection)
+        pocket_structure: PDB string of protein structure
+        dist_matrix: Distance matrix with shape (n_reduced_receptor, n_reduced_receptor)
+            for reduced receptor atoms (CA + non-C + ring centers)
+        sidechain_checkpoint: Path to sidechain model checkpoint (None for auto-detection)
         device: PyTorch device (None for auto-detection)
         seed: Random seed (None for random)
     
@@ -72,44 +44,70 @@ def run_coords_mode(
     
     if seed is not None:
         torch.manual_seed(seed)
-    
-    from src.pdb_utils import Structure
-    from io import StringIO
+        np.random.seed(seed)
     
     # Parse pocket structure
+    from src.pdb_utils import Structure
+    from io import StringIO
     structure = Structure()
     structure.read(StringIO(pocket_structure))
     pocket_info = parse_pocket(structure)
+    if pocket_info is None:
+        raise ValueError("Failed to parse pocket structure")
     
-    # Convert inputs to correct types
-    dist_matrix = np.asarray(dist_matrix, dtype=np.int64)
-            
-    # Get full coords from pocket_info
-    protein_size = len(pocket_info['full_coords'])
+    # Get receptor atoms and coordinates
+    receptor_atoms = pocket_info['atoms']
+    receptor_reduced_coords = pocket_info['reduced_coords']
+    receptor_full_coords = pocket_info['full_coords']
     
-    features = init_dist_to_coords_features(
+    # Validate dist_matrix shape
+    n_reduced_receptor = len(receptor_reduced_coords)
+    if dist_matrix.shape[0] != n_reduced_receptor or dist_matrix.shape[1] != n_reduced_receptor:
+        raise ValueError(
+            f"dist_matrix shape {dist_matrix.shape} does not match "
+            f"n_reduced_receptor ({n_reduced_receptor})"
+        )
+    
+    # Expand distance matrix to get full_receptor_atoms list (with correct order)
+    full_dist_matrix, full_receptor_atoms = expand_dist_matrix(dist_matrix, receptor_atoms)
+    
+    # Initialize features from distance matrix
+    features = init_receptor_features(
         dist_matrix=dist_matrix,
-        receptor_atoms=pocket_info['atoms'],
-        ligand_fixed_atoms=ligand_atoms,
-        ligand_size=ligand_size,
+        receptor_atoms=receptor_atoms
     )
-    features['x'] = np.zeros((protein_size + ligand_size, 3))
     
+    # Initialize x: CA atoms use original coordinates, others use random coordinates
+    # full_receptor_atoms and receptor_full_coords should have the same order
+    # since both are built by iterating receptor_atoms in the same way
+    n_receptor = len(full_receptor_atoms)
+    assert n_receptor == len(receptor_full_coords), \
+        f"Length mismatch: full_receptor_atoms ({n_receptor}) != receptor_full_coords ({len(receptor_full_coords)})"
     
-    graph = CoordsDataset.features_to_graph(features)
+    x = np.random.randn(n_receptor, 3).astype(np.float32)
+    
+    # Set CA atoms to original coordinates
+    # Since full_receptor_atoms is built in the same order as receptor_full_coords,
+    # we can directly map by index
+    for i, atom_name in enumerate(full_receptor_atoms):
+        if atom_name == 'CA':
+            x[i] = receptor_full_coords[i]
+
+    features['x'] = x
+    
+    graph = SidechainDataset.features_to_graph(features)
     graph = graph.to(device)
     
-    if coords_checkpoint is None:
-        coords_checkpoint = pick_latest(['checkpoints/*coords2*/*.ckpt'])
+    if sidechain_checkpoint is None:
+        sidechain_checkpoint = pick_latest(['checkpoints/*sidechain*/*.ckpt'])
     
-    print(f"Loading model from: {coords_checkpoint}")
-    model = LightningWrapper.load_from_checkpoint(coords_checkpoint, map_location='cpu')
+    print(f"Loading model from: {sidechain_checkpoint}")
+    model = LightningWrapper.load_from_checkpoint(sidechain_checkpoint, map_location='cpu')
     model = model.eval()
     model = model.to(device)
     
     final_prediction, chain = model.sample_chain(graph=graph)
-
-    pocket_info['ligand_atom_names'] = ligand_atoms + ['_C'] * (ligand_size - len(ligand_atoms))
+    
     return final_prediction, chain, pocket_info
 
 def _ensure_parent(path: str):
@@ -158,13 +156,11 @@ def _save_model(x: np.ndarray, pocket_info: dict, f, start_serial: int = 1):
     from src.pdb_utils import pdb_line
     
     pocket_atom_names, pocket_residue_names, pocket_res_ids, pocket_chain_ids = _extract_pocket_metadata(pocket_info)
-    ligand_atom_names = pocket_info.get('ligand_atom_names', [])
-    pocket_size = len(pocket_atom_names)
     
     serial = start_serial
     
     # Receptor atoms (skip ring center virtual atoms)
-    for i in range(min(pocket_size, x.shape[0])):
+    for i in range(min(len(pocket_atom_names), x.shape[0])):
         atom_name = pocket_atom_names[i] if i < len(pocket_atom_names) else 'CA'
         # Skip ring center virtual atoms (start with 'RING_')
         if atom_name.startswith('RING_'):
@@ -176,32 +172,21 @@ def _save_model(x: np.ndarray, pocket_info: dict, f, start_serial: int = 1):
         f.write(pdb_line(serial=serial, atom_name=atom_name, res_name=res_name, chain_id=chain_id, res_seq=res_seq, x=cx, y=cy, z=cz))
         serial += 1
     
-    # Ligand atoms
-    for j in range(pocket_size, x.shape[0]):
-        cx, cy, cz = x[j]
-        # Use ligand atom name if available, otherwise use 'C'
-        ligand_idx = j - pocket_size
-        atom_name = ligand_atom_names[ligand_idx] if ligand_idx < len(ligand_atom_names) else 'C'
-        if atom_name.startswith('_'):
-            atom_name = atom_name[1:]
-        f.write(pdb_line(record='HETATM', serial=serial, atom_name=atom_name, res_name='LIG', chain_id='B', res_seq=(pocket_res_ids[-1] + 2) if pocket_res_ids else 1, x=cx, y=cy, z=cz))
-        serial += 1
-    
     return serial
 
-def save_coords_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
-    """Save coordinates as PDB using pocket atom metadata; ligand atoms use placeholders.
-    coords: [N,3] tensor predicted by CoordsModel.
+def save_sidechain_pdb(coords: torch.Tensor, pocket_info: dict, output_path: str):
+    """Save coordinates as PDB using pocket atom metadata.
+    coords: [N,3] tensor predicted by SidechainModel.
     """
     _ensure_parent(output_path)
     x = coords.detach().cpu().numpy()
     
     with open(output_path, 'w') as f:
-        f.write("HEADER    COORDS2 PREDICTION\n")
+        f.write("HEADER    SIDECHAIN PREDICTION\n")
         _save_model(x, pocket_info, f)
         f.write("END\n")
 
-def save_coords_trajectory(chain: torch.Tensor, pocket_info: dict, output_path: str):
+def save_sidechain_trajectory(chain: torch.Tensor, pocket_info: dict, output_path: str):
     """Save coordinate trajectory (frames,N,3) into a multi-model PDB file."""
     _ensure_parent(output_path)
     

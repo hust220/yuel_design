@@ -16,23 +16,19 @@ device = "cuda"
 resume = None  # Set to experiment name to resume training
 
 # Memory settings
-cache_mode = "file"  # No caching (recompute features each time)
+cache_mode = "file"
 cache_dir = "cache"
 low_memory = False
 
 # Dataset settings
-num_workers = 4  # Will become useful with larger batch_size
+num_workers = 4
 
 # Model parameters
 diffusion_steps = 100
 diffusion_noise_schedule = 'polynomial_2'
 diffusion_noise_precision = 1e-5
 t_weight_power = 0.0
-
-# Distformer parameters
-n_blocks = 8  # Number of DistAttention blocks
-hidden_nf = 64  # d_model: latent dimension for Distformer
-in_node_features = 72  # 3 (mol_types) + 69 (atom_one_hot: X + protein_atoms + ligand_elements)
-in_edge_features = 2  # z: [is_same_residue, is_interaction]
-dim_feedforward = 256  # FFN hidden dimension in DistAttention
-eps = 1e-8  # Numerical stability parameter
+n_blocks = 16
+hidden_nf = 64
+in_node_features = 122 # 3 (mol_types) + 1 (X) + 20 (protein cg atom types) + 79 (protein aa atom types) + 19 (ligand atoms)
+in_edge_features = 14 # 13 (distance) + 1 (is_same_residue)
