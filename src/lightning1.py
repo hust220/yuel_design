@@ -4,8 +4,18 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import Optional
 
-# Import dataset module for dynamic class loading
-from . import datasets
+from torch.utils.data import Dataset, DataLoader
+
+def get_dataloader(dataset, batch_size, collate_fn, shuffle=False, num_workers=0, device=None):
+    return DataLoader(
+        dataset,
+        batch_size,
+        collate_fn=collate_fn,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=True if num_workers > 0 else False,
+    )
 
 class LightningWrapper(pl.LightningModule):
     train_dataset = None
@@ -27,11 +37,8 @@ class LightningWrapper(pl.LightningModule):
         self.model = model_class(**kwargs)
 
     def _get_dataset_class(self, dataset_class):
-        """Dynamically get dataset class from datasets module"""
         if isinstance(dataset_class, type) and issubclass(dataset_class, torch.utils.data.Dataset):
             return dataset_class
-        elif isinstance(dataset_class, str) and hasattr(datasets, dataset_class):
-            return getattr(datasets, dataset_class)
         else:
             raise ValueError(f"Invalid dataset class: {dataset_class}")
 
@@ -57,9 +64,7 @@ class LightningWrapper(pl.LightningModule):
             if callable(dataset_collate):
                 collate_fn = dataset_collate
             else:
-                from src.datasets import collate
-                collate_fn = collate
-        from src.datasets import get_dataloader
+                raise ValueError(f"No collate function found for dataset class: {self.dataset_class}")
         return get_dataloader(self.train_dataset, self.batch_size, collate_fn=collate_fn, shuffle=True, num_workers=self.num_workers)
 
     def val_dataloader(self, collate_fn=None):
@@ -68,9 +73,7 @@ class LightningWrapper(pl.LightningModule):
             if callable(dataset_collate):
                 collate_fn = dataset_collate
             else:
-                from src.datasets import collate
-                collate_fn = collate
-        from src.datasets import get_dataloader
+                raise ValueError(f"No collate function found for dataset class: {self.dataset_class}")
         return get_dataloader(self.val_dataset, self.batch_size, collate_fn=collate_fn, num_workers=self.num_workers)
 
     def test_dataloader(self, collate_fn=None):
@@ -79,9 +82,7 @@ class LightningWrapper(pl.LightningModule):
             if callable(dataset_collate):
                 collate_fn = dataset_collate
             else:
-                from src.datasets import collate
-                collate_fn = collate
-        from src.datasets import get_dataloader
+                raise ValueError(f"No collate function found for dataset class: {self.dataset_class}")
         return get_dataloader(self.test_dataset, self.batch_size, collate_fn=collate_fn, num_workers=self.num_workers)
 
     def forward(self, data, training=None):

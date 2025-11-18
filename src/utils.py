@@ -599,6 +599,10 @@ def run_training(args=None, model=None, dataset=None, config=None):
     device = args["device"]
     args['device'] = torch.device(device)
     
+    # Enable Tensor Core optimization for CUDA devices
+    if device == 'cuda':
+        torch.set_float32_matmul_precision('medium')
+    
     # Create model with wrapper
     model = LightningWrapper(model_class=model, **args)
 

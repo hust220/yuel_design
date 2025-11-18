@@ -140,10 +140,11 @@ class E2EModel(torch.nn.Module):
         self.num_ligand_atom_types = kwargs.get('num_ligand_atom_types', 20)
         
         # E3former initialization
-        # seq_input_dim = in_node_features + num_ligand_atom_types (atom_onehot) + 2 (mask and time)
+        # seq_input_dim = in_node_features + num_ligand_atom_types (atom_onehot) + 2 (anchor_mask and time)
+        # z_input_dim = 1 (is_same_residue only, no distance)
         # c_s = num_ligand_atom_types: s_out will directly output atom type logits
         self.e3former = E3former(
-            seq_input_dim=in_node_features + self.num_ligand_atom_types + 2,  # +atom_onehot + mask + time
+            seq_input_dim=in_node_features + self.num_ligand_atom_types + 2,  # +atom_onehot + anchor_mask + time
             z_input_dim=in_edge_features,
             c_m=hidden_nf,
             c_z=hidden_nf,
@@ -205,10 +206,14 @@ class E2EModel(torch.nn.Module):
         t = t / self.T
         
         h = data['h']  # [batch_size, n, h_dim]
-        receptor_mask = data['receptor_mask']  # [batch_size, n]
-        z = data['z']  # [batch_size, n, n, z_dim]
+        z = data['z']  # [batch_size, n, n, 1] - [is_same_residue]
+
+        receptor_mask = data['receptor_mask'].unsqueeze(-1)  # [batch_size, n, 1]
         seq_mask = data['seq_mask']  # [batch_size, n]
         pair_mask = data['pair_mask']  # [batch_size, n, n]
+        anchor_mask = data['anchor_mask'].unsqueeze(-1)  # [batch_size, n, 1]
+
+        ligand_mask = (1 - receptor_mask) * seq_mask.unsqueeze(-1)  # [batch_size, n, 1]
 
         coords = xt['coords']  # [batch_size, n, 3]
         atoms = xt['atoms']  # [batch_size, n]
@@ -217,20 +222,11 @@ class E2EModel(torch.nn.Module):
         
         # Create one-hot encoding for atom types
         atom_onehot = F.one_hot(atoms, num_classes=self.num_ligand_atom_types).float()  # [batch_size, n, num_ligand_atom_types]
-        
-        # For receptor atoms, set atom_onehot to zeros; for ligand atoms, use the one-hot encoding
-        receptor_mask_expanded = receptor_mask.unsqueeze(-1).float()  # [batch_size, n, 1]
-        ligand_mask_expanded = (1 - receptor_mask).unsqueeze(-1).float()  # [batch_size, n, 1]
-        atom_onehot = atom_onehot * ligand_mask_expanded  # [batch_size, n, num_ligand_atom_types]
-        
-        # Concatenate h and atom_onehot
-        h_concat = torch.cat([h, atom_onehot], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types]
-        
-        # Add receptor_mask and time step
-        # t: [batch_size] -> expand to [batch_size, n, 1]
+        atom_onehot = atom_onehot * ligand_mask  # [batch_size, n, num_ligand_atom_types]
+                
         t_expanded = t.unsqueeze(-1).unsqueeze(-1).expand(batch_size, n_nodes, 1)
         
-        seq = torch.cat([h_concat, receptor_mask_expanded, t_expanded], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types + 2]
+        seq = torch.cat([h, atom_onehot, anchor_mask, t_expanded], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types + 1 + 1]
         
         x_in = coords.clone()  # Save input coordinates
         
@@ -245,7 +241,7 @@ class E2EModel(torch.nn.Module):
         )
         
         # Return coordinate update
-        dx = x_out - coords
+        dx = x_out - x_in
         
         return s_out, dx
 
@@ -277,8 +273,8 @@ class E2EModel(torch.nn.Module):
         gamma_t = self.gamma(t)  # [B]
         alpha_t = torch.sqrt(torch.sigmoid(-gamma_t)).view(-1, 1, 1)  # [B, 1, 1]
         sigma_t = torch.sqrt(torch.sigmoid(gamma_t)).view(-1, 1, 1)  # [B, 1, 1]
-        eps_coords = torch.randn_like(target['coords']) * sample_mask
-        noisy_coords = alpha_t * target['coords'] + sigma_t * eps_coords
+        eps_sample = torch.randn_like(target['coords']) * sample_mask
+        noisy_coords = alpha_t * target['coords'] + sigma_t * eps_sample
 
         # === Discrete diffusion: atom types ===
         noisy_atoms = self.hmm_ligand_atoms.q_sample(target['atoms'], t_tensor.long())
@@ -290,20 +286,25 @@ class E2EModel(torch.nn.Module):
         }
         
         s_out, pred_eps_coords = self.model_predict(xt, t_tensor, data)
+        x0_pred = (noisy_coords - sigma_t * pred_eps_coords) / alpha_t
+        
         loss = {
-            'coords': self.coord_loss_fn(pred_eps_coords, eps_coords, sample_mask),
+            'coords': self.coord_loss_fn(pred_eps_coords, eps_sample, sample_mask),
             'atoms': self.atom_loss_fn(s_out, target['atoms'], ligand_mask),
+            'interaction': self.interaction_loss_fn(x0_pred, data, receptor_mask, ligand_mask),
         }
         
         return {
-            'loss': loss['coords'] + loss['atoms'],
+            'loss': loss['coords'] + loss['atoms'] + loss['interaction'],
             'coord_loss': loss['coords'],
             'atom_loss': loss['atoms'],
+            'interaction_loss': loss['interaction'],
         }
     
     def coord_loss_fn(self, pred, target, mask):
         """Compute coordinate loss (MSE) with mask"""
-        loss = ((pred - target) ** 2 * mask).sum() / mask.sum().clamp(min=1)
+        loss = ((pred - target) ** 2) * mask
+        loss = loss.sum() / mask.sum().clamp(min=1)
         return loss
     
     def atom_loss_fn(self, logits, target, mask):
@@ -315,6 +316,70 @@ class E2EModel(torch.nn.Module):
         )
         loss = (loss * mask.view(-1)).sum() / mask.sum().clamp(min=1)
         return loss
+    
+    def interaction_loss_fn(self, x0_pred, data, receptor_mask, ligand_mask):
+        """Compute interaction loss: check if receptor_interaction atoms are within 5A of ligand
+        
+        Args:
+            x0_pred: [B, N, 3] - predicted coordinates (uncentered)
+            data: dict containing 'receptor_interaction' [B, N] - 1 for interacting receptor atoms
+            receptor_mask: [B, N, 1] - 1 for receptor atoms
+            ligand_mask: [B, N, 1] - 1 for ligand atoms
+        
+        Returns:
+            Loss value (penalty if interacting receptor atoms are too far from ligand)
+        """
+        if 'receptor_interaction' not in data:
+            return torch.tensor(0.0, device=x0_pred.device, dtype=x0_pred.dtype)
+        
+        receptor_interaction = data['receptor_interaction']  # [B, N]
+        receptor_mask_1d = receptor_mask.squeeze(-1)  # [B, N]
+        ligand_mask_1d = ligand_mask.squeeze(-1)  # [B, N]
+        
+        # Find interacting receptor atoms and ligand atoms
+        interacting_receptor = (receptor_interaction == 1) & (receptor_mask_1d == 1)  # [B, N]
+        ligand_atoms = ligand_mask_1d == 1  # [B, N]
+        
+        # Compute pairwise distances: [B, N, N]
+        coords_i = x0_pred.unsqueeze(2)  # [B, N, 1, 3]
+        coords_j = x0_pred.unsqueeze(1)  # [B, 1, N, 3]
+        distances = torch.sqrt(((coords_i - coords_j) ** 2).sum(dim=-1) + 1e-8)  # [B, N, N]
+        
+        # For each interacting receptor atom, find minimum distance to any ligand atom
+        # interacting_receptor: [B, N] -> [B, N, 1]
+        # ligand_atoms: [B, N] -> [B, 1, N]
+        # Mask: only distances from interacting receptor to ligand atoms
+        rec_lig_distances = distances.clone()  # [B, N, N]
+        
+        # For rows (interacting receptor atoms), only consider columns (ligand atoms)
+        # Set distances to non-ligand atoms to inf for interacting receptor atoms
+        ligand_mask_expanded = ligand_atoms.unsqueeze(1).float()  # [B, 1, N]
+        rec_lig_distances = torch.where(
+            ligand_mask_expanded > 0.5,
+            rec_lig_distances,
+            torch.tensor(float('inf'), device=distances.device, dtype=distances.dtype)
+        )  # [B, N, N]
+        
+        # Minimum distance for each atom to any ligand atom: [B, N]
+        min_distances_to_ligand = rec_lig_distances.min(dim=2)[0]  # [B, N]
+        
+        # Only consider interacting receptor atoms
+        # For interacting receptor atoms, get their min distance; for others, set to 0
+        min_distances_interacting = torch.where(
+            interacting_receptor,
+            min_distances_to_ligand,
+            torch.tensor(0.0, device=min_distances_to_ligand.device, dtype=min_distances_to_ligand.dtype)
+        )  # [B, N]
+        
+        # Penalty if minimum distance > 5.0 (using ReLU: max(0, min_dist - 5.0))
+        penalty = F.relu(min_distances_interacting - 5.0)  # [B, N]
+        
+        # Average penalty over all interacting receptor atoms
+        n_interacting = interacting_receptor.sum()  # total number of interacting receptor atoms across batch
+        if n_interacting > 0:
+            return penalty.sum() / n_interacting
+        else:
+            return torch.tensor(0.0, device=x0_pred.device, dtype=x0_pred.dtype)
 
     @torch.no_grad()
     def sample_chain(self, data, keep_frames=None):
@@ -385,8 +450,12 @@ class E2EModel(torch.nn.Module):
         
         # Compute mu for sample part
         mu_coords = xt['coords'] / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat_coords  # [B, N, 3]
-        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]       
-        xs_coords = mu_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
+        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]
+        
+        # For next step s: anchor part should be alpha_s * x0, sample part uses reverse diffusion
+        alpha_s = torch.sqrt(torch.sigmoid(-gamma_s))  # [B, 1, 1]
+        xs_coords = mu_coords * sample_mask + alpha_s * x0_centered * anchor_mask
+        xs_coords = xs_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
 
         xs_atoms = self.hmm_ligand_atoms.p_sample(
             xt['atoms'],  # [B, N]

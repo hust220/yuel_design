@@ -54,7 +54,7 @@ def run_cont_mode(
     
     from src.pdb_utils import Structure
     from io import StringIO
-    from src.cont.dataset import init_ligand_coords_features
+    from src.cont2.dataset import init_ligand_coords_features
     
     # Parse pocket structure
     structure = Structure()

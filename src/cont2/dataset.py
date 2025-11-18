@@ -6,7 +6,6 @@ from torch.utils.data import Dataset
 from rdkit import Chem
 from src import const
 from src.pdb_utils import Structure
-import src.gnn as gnn
 from src.cache import FileCache
 from src.db_utils import db_connection
 from src.const import PROTEIN_ATOM_TYPES

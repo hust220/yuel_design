@@ -11,8 +11,8 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(project_root))
 
 from src.db_utils import db_connection
-from src.e2e.app import run_e2e_mode, save_structure_pdb, save_trajectory
-from src.e2e.dataset import (
+from src.e2edisc.app import run_e2e_mode, save_structure_pdb, save_trajectory
+from src.e2edisc.dataset import (
     get_ligand_atoms_and_coords,
     parse_pocket,
     create_ligand_coords_features,
@@ -73,7 +73,7 @@ def test_e2e_mode(device):
     )
 
     import os
-    output_dir = f"test_outputs/e2e_{pocket_id}"
+    output_dir = f"test_outputs/e2edisc_{pocket_id}"
     os.makedirs(output_dir, exist_ok=True)
 
     original_pdb_path = os.path.join(output_dir, "original_receptor.pdb")
@@ -95,6 +95,7 @@ def test_e2e_mode(device):
     print(f"✓ E2E mode test passed! Generated coordinates with shape: {final_coords.shape}")
     print(f"  Generated atom types with shape: {final_atoms.shape}")
     print(f"  Ligand atom types: {final_atoms[final_atoms > 0].cpu().numpy()}")
+
 
 def test_e2e_mode_with_dataset(device):
     """Test using E2EDataset to load data and E2EModel to generate coordinates and atom types"""

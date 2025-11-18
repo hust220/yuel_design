@@ -8,7 +8,7 @@ sys.path.append(str(PROJECT_ROOT))
 
 from src.utils import pick_latest
 from src.lightning1 import LightningWrapper
-from src.e2e.dataset import (
+from src.e2edisc.dataset import (
     parse_pocket,
     create_ligand_coords_features,
     E2EDataset,
@@ -78,11 +78,6 @@ def run_e2e_mode(
         ligand_size=ligand_size,
         full_coords=full_coords
     )
-    # Save z matrix distance feature to txt file
-    # z_distance = features['z'][:, :, 1]  # Extract distance feature (second dimension)
-    # z_output_path = "z_distance.txt"
-    # np.savetxt(z_output_path, z_distance, fmt='%.6f')
-    # print(f"Saved z distance feature to {z_output_path}, shape: {z_distance.shape}")
     features['x'] = full_coords
     
     # Convert to tensors and add batch dimension
@@ -91,7 +86,7 @@ def run_e2e_mode(
     data = {k: v.unsqueeze(0).to(device) for k, v in data.items()}
     
     if e2e_checkpoint is None:
-        e2e_checkpoint = pick_latest(['checkpoints/*e2e_*/*.ckpt'])
+        e2e_checkpoint = pick_latest(['checkpoints/*e2edisc*/*.ckpt'])
     
     print(f"Loading model from: {e2e_checkpoint}")
     model = LightningWrapper.load_from_checkpoint(e2e_checkpoint, map_location='cpu')

@@ -119,11 +119,11 @@ class E3former(nn.Module):
         z = torch.cat([z, distances.unsqueeze(-1)], dim=-1)  # (b, n, n, z_input_dim + 1)
         z = self.embed_z(z)  # (b, n, n, c_z)
 
-        _, z_out, _ = self.evoformer(seq, z, seq_mask, pair_mask, chunk_size)  # (b, n, c_m), (b, n, n, c_z), (b, n, c_s)
+        _, z_out, s_out = self.evoformer(seq, z, seq_mask, pair_mask, chunk_size)  # (b, n, c_m), (b, n, n, c_z), (b, n, c_s)
 
         weighted_diff = self.coord_mlp(z_out) * coord_diff  # (b, n, n, 1) * (b, n, n, 3) = (b, n, n, 3)
-        x = x + torch.sum(weighted_diff, dim=2)  # (b, n, 3)
+        x_out = x + torch.sum(weighted_diff, dim=2)  # (b, n, 3)
 
-        return x
+        return s_out, x_out
 
 

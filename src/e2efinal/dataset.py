@@ -265,9 +265,11 @@ def init_ligand_coords_features(receptor_atoms, ligand_size, full_coords):
     receptor_mask = np.zeros(n_total, dtype=np.int64)
     receptor_mask[:n_receptor] = 1
     
-    # Create anchor mask: 1 for first atom, 0 for others
+    # Create anchor mask: 1 for all CA atoms, 0 for others
     anchor_mask = np.zeros(n_total, dtype=np.int64)
-    anchor_mask[0] = 1
+    for i, atom_name in enumerate(full_receptor_atoms):
+        if atom_name == 'CA':
+            anchor_mask[i] = 1
     
     # For unbatched data (single sample), seq_mask and pair_mask are all 1s (no padding)
     seq_mask = np.ones(n_total, dtype=np.int64)
@@ -290,17 +292,15 @@ def build_pair_features(receptor_atoms, ligand_size, full_coords):
     Args:
         receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
         ligand_size: Number of ligand atoms
-        full_coords: Array of all atom coordinates (receptor + ligand)
+        full_coords: Array of all atom coordinates (receptor + ligand) - unused, kept for API compatibility
     
     Returns:
-        numpy array of shape (n, n, 2) with [is_same_residue, ca_distance] features
+        numpy array of shape (n, n, 1) with [is_same_residue] feature
     """
-    # Build residue indices and atom names for each receptor atom
+    # Build residue indices for each receptor atom
     res_indices = []
-    atom_names = []
     for res_idx, (reduced_atoms, full_atoms) in enumerate(receptor_atoms):
         res_indices.extend([res_idx] * len(full_atoms))
-        atom_names.extend(full_atoms)
     
     n_receptor = len(res_indices)
     n = n_receptor + ligand_size
@@ -308,11 +308,8 @@ def build_pair_features(receptor_atoms, ligand_size, full_coords):
     # Extend residue indices for ligand (use -1 for ligand atoms)
     res_indices = np.array(res_indices + [-1] * ligand_size, dtype=np.int64)
     
-    # Extend atom names for ligand (use empty string)
-    atom_names = atom_names + [''] * ligand_size
-    
     # Build dense pair feature matrix
-    z = np.zeros((n, n, 2), dtype=np.float32)
+    z = np.zeros((n, n, 1), dtype=np.float32)
     
     for i in range(n):
         for j in range(n):
@@ -322,13 +319,6 @@ def build_pair_features(receptor_atoms, ligand_size, full_coords):
             res_i, res_j = res_indices[i], res_indices[j]
             is_same_residue = 1.0 if (res_i == res_j and res_i != -1) else 0.0
             z[i, j, 0] = is_same_residue
-            
-            # CA distance: only compute for CA-CA pairs
-            if atom_names[i] == 'CA' and atom_names[j] == 'CA':
-                distance = np.linalg.norm(full_coords[i] - full_coords[j])
-                z[i, j, 1] = distance
-            else:
-                z[i, j, 1] = 0.0
     
     return z
 
@@ -448,7 +438,7 @@ class E2EDataset(Dataset):
     """Dataset for predicting continuous features from distance matrix."""
 
     def __init__(self, split='train', cache_mode='memory', cache_dir='cache'):
-        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='e2e1')
+        self.cache = FileCache(cache_mode=cache_mode, cache_dir=cache_dir, dataset_name='e2e')
         self.split = split
         
         with db_connection() as conn:
@@ -495,36 +485,7 @@ class E2EDataset(Dataset):
         else:
             features, ligand_name = cached_data
         
-        # Add noise to CA distances in z matrix
-        # features = self.add_noise_to_ca_distance(features)
-        
         return self.features_to_tensors(features)
-    
-    @staticmethod
-    def add_noise_to_ca_distance(features, noise_std=1):
-        """Add Gaussian noise to CA-CA distances in z matrix.
-        
-        Args:
-            features: dict with 'z' key containing pair features
-            noise_std: standard deviation of Gaussian noise (in Angstrom)
-        
-        Returns:
-            features dict with noisy CA distances
-        """
-        z = features['z'].copy()
-        
-        # Find CA-CA pairs (where z[:, :, 1] != 0)
-        ca_mask = z[:, :, 1] != 0.0
-        
-        # Add Gaussian noise to CA distances
-        if ca_mask.any():
-            noise = np.random.randn(z.shape[0], z.shape[1]) * noise_std
-            z[:, :, 1] = np.where(ca_mask, z[:, :, 1] + noise, z[:, :, 1])
-            # Ensure distances remain non-negative
-            z[:, :, 1] = np.maximum(z[:, :, 1], 0.0)
-        
-        features['z'] = z
-        return features
 
     @staticmethod
     def features_to_tensors(features):
@@ -570,7 +531,7 @@ class E2EDataset(Dataset):
                 - h: [batch_size, max_n, h_dim] - node features
                 - z: [batch_size, max_n, max_n, z_dim] - pair features
                 - receptor_mask: [batch_size, max_n] - mask for receptor atoms (1=receptor, 0=ligand/padding)
-                - anchor_mask: [batch_size, max_n] - mask for anchor atom (1=first atom, 0=others)
+                - anchor_mask: [batch_size, max_n] - mask for anchor atoms (1=CA atoms, 0=others)
                 - seq_mask: [batch_size, max_n] - mask for non-padding nodes (1=valid, 0=padding)
                 - pair_mask: [batch_size, max_n, max_n] - mask for non-padding pairs (1=valid, 0=padding)
                 - ligand_atoms: [batch_size, max_n] - ligand atom type class indices (0 for receptor/padding)
@@ -586,7 +547,7 @@ class E2EDataset(Dataset):
         h_batch = torch.zeros(batch_size, max_n, h_dim, dtype=torch.float32)
         z_batch = torch.zeros(batch_size, max_n, max_n, z_dim, dtype=torch.float32)
         receptor_mask_batch = torch.zeros(batch_size, max_n, dtype=torch.long)  # 1 for receptor, 0 for ligand/padding
-        anchor_mask_batch = torch.zeros(batch_size, max_n, dtype=torch.long)  # 1 for first atom, 0 for others
+        anchor_mask_batch = torch.zeros(batch_size, max_n, dtype=torch.long)  # 1 for CA atoms, 0 for others
         seq_mask_batch = torch.zeros(batch_size, max_n, dtype=torch.long)  # 1 for valid, 0 for padding
         pair_mask_batch = torch.zeros(batch_size, max_n, max_n, dtype=torch.long)  # 1 for valid pairs, 0 for padding
         ligand_atoms_batch = torch.zeros(batch_size, max_n, dtype=torch.long)  # ligand atom classes (same size as nodes)

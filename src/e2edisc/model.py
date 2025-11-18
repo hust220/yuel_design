@@ -8,6 +8,7 @@ import numpy as np
 
 # Local imports
 from src.e3former import E3former
+from src.distance_discretization import bin_distances, get_num_distance_bins
 
 class DiffusionTransitionMatrix(nn.Module):
     
@@ -139,12 +140,17 @@ class E2EModel(torch.nn.Module):
         # D3PM for ligand atom types
         self.num_ligand_atom_types = kwargs.get('num_ligand_atom_types', 20)
         
+        # Distance discretization: use b12 config
+        self.num_distance_bins = get_num_distance_bins('b12')  # 12 bins
+        # z_input_dim = 1 (is_same_residue) + num_distance_bins (one-hot distance)
+        z_input_dim_discretized = 1 + self.num_distance_bins
+        
         # E3former initialization
         # seq_input_dim = in_node_features + num_ligand_atom_types (atom_onehot) + 2 (mask and time)
         # c_s = num_ligand_atom_types: s_out will directly output atom type logits
         self.e3former = E3former(
             seq_input_dim=in_node_features + self.num_ligand_atom_types + 2,  # +atom_onehot + mask + time
-            z_input_dim=in_edge_features,
+            z_input_dim=z_input_dim_discretized,
             c_m=hidden_nf,
             c_z=hidden_nf,
             c_s=self.num_ligand_atom_types,  # s_out will be atom type logits
@@ -206,7 +212,7 @@ class E2EModel(torch.nn.Module):
         
         h = data['h']  # [batch_size, n, h_dim]
         receptor_mask = data['receptor_mask']  # [batch_size, n]
-        z = data['z']  # [batch_size, n, n, z_dim]
+        z = data['z']  # [batch_size, n, n, 2] - [is_same_residue, distance]
         seq_mask = data['seq_mask']  # [batch_size, n]
         pair_mask = data['pair_mask']  # [batch_size, n, n]
 
@@ -214,6 +220,17 @@ class E2EModel(torch.nn.Module):
         atoms = xt['atoms']  # [batch_size, n]
 
         batch_size, n_nodes = h.shape[0], h.shape[1]
+        
+        # Discretize distance and convert to one-hot
+        distances = z[:, :, :, 1]  # [batch_size, n, n] - distance feature
+        distance_classes = bin_distances(distances, 'b12')  # [batch_size, n, n] - discrete class indices
+        distance_onehot = F.one_hot(distance_classes, num_classes=self.num_distance_bins).float()  # [batch_size, n, n, num_distance_bins]
+        
+        # Extract is_same_residue feature
+        is_same_residue = z[:, :, :, 0:1]  # [batch_size, n, n, 1]
+        
+        # Concatenate is_same_residue and one-hot distance
+        z_discretized = torch.cat([is_same_residue, distance_onehot], dim=-1)  # [batch_size, n, n, 1 + num_distance_bins]
         
         # Create one-hot encoding for atom types
         atom_onehot = F.one_hot(atoms, num_classes=self.num_ligand_atom_types).float()  # [batch_size, n, num_ligand_atom_types]
@@ -238,7 +255,7 @@ class E2EModel(torch.nn.Module):
         s_out, x_out = self.e3former.forward(
             seq=seq,
             x=x_in,
-            z=z,
+            z=z_discretized,
             seq_mask=seq_mask,
             pair_mask=pair_mask,
             chunk_size=self.chunk_size,
@@ -384,9 +401,17 @@ class E2EModel(torch.nn.Module):
         sigma_t = torch.sqrt(torch.sigmoid(gamma_t))  # [B, 1, 1]
         
         # Compute mu for sample part
+        # print(torch.max(1/alpha_t_given_s), torch.min(1/alpha_t_given_s))
+        # print(torch.max(sigma2_t_given_s), torch.min(sigma2_t_given_s))
+        # print(torch.max(sigma2_t_given_s / alpha_t_given_s / sigma_t), torch.min(sigma2_t_given_s / alpha_t_given_s / sigma_t))
+        # print(torch.max(eps_hat_coords), torch.min(eps_hat_coords))
         mu_coords = xt['coords'] / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat_coords  # [B, N, 3]
-        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]       
-        xs_coords = mu_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
+        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]
+        
+        # For next step s: anchor part should be alpha_s * x0, sample part uses reverse diffusion
+        alpha_s = torch.sqrt(torch.sigmoid(-gamma_s))  # [B, 1, 1]
+        xs_coords = mu_coords * sample_mask + alpha_s * x0_centered * anchor_mask
+        xs_coords = xs_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
 
         xs_atoms = self.hmm_ligand_atoms.p_sample(
             xt['atoms'],  # [B, N]

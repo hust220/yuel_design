@@ -166,7 +166,7 @@ class ContModel(torch.nn.Module):
         x_in = xt.clone()  # Save input coordinates
         
         # E3former forward: forward(seq, x, z, seq_mask, pair_mask, chunk_size) -> x
-        x_out = self.e3former.forward(
+        _, x_out = self.e3former.forward(
             seq=seq,
             x=x_in,
             z=z,
@@ -271,6 +271,10 @@ class ContModel(torch.nn.Module):
         # Compute mu for p(z_s | z_t)
         alpha_t_given_s = alpha_t_given_s[:, None]  
         sigma2_t_given_s = sigma2_t_given_s[:, None]
+        # print(torch.max(1/alpha_t_given_s), torch.min(1/alpha_t_given_s))
+        # print(torch.max(sigma2_t_given_s), torch.min(sigma2_t_given_s))
+        # print(torch.max(sigma2_t_given_s / alpha_t_given_s / sigma_t), torch.min(sigma2_t_given_s / alpha_t_given_s / sigma_t))
+        print(torch.max(eps_hat), torch.min(eps_hat))
         mu = xt / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat # [N, F]
 
         # Compute sigma for p(z_s | z_t)

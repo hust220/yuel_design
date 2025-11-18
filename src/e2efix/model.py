@@ -140,10 +140,11 @@ class E2EModel(torch.nn.Module):
         self.num_ligand_atom_types = kwargs.get('num_ligand_atom_types', 20)
         
         # E3former initialization
-        # seq_input_dim = in_node_features + num_ligand_atom_types (atom_onehot) + 2 (mask and time)
+        # seq_input_dim = in_node_features + num_ligand_atom_types (atom_onehot) + 2 (anchor_mask and time)
+        # z_input_dim = 1 (is_same_residue only, no distance)
         # c_s = num_ligand_atom_types: s_out will directly output atom type logits
         self.e3former = E3former(
-            seq_input_dim=in_node_features + self.num_ligand_atom_types + 2,  # +atom_onehot + mask + time
+            seq_input_dim=in_node_features + self.num_ligand_atom_types + 2,  # +atom_onehot + anchor_mask + time
             z_input_dim=in_edge_features,
             c_m=hidden_nf,
             c_z=hidden_nf,
@@ -205,10 +206,14 @@ class E2EModel(torch.nn.Module):
         t = t / self.T
         
         h = data['h']  # [batch_size, n, h_dim]
-        receptor_mask = data['receptor_mask']  # [batch_size, n]
-        z = data['z']  # [batch_size, n, n, z_dim]
+        z = data['z']  # [batch_size, n, n, 1] - [is_same_residue]
+
+        receptor_mask = data['receptor_mask'].unsqueeze(-1)  # [batch_size, n, 1]
         seq_mask = data['seq_mask']  # [batch_size, n]
         pair_mask = data['pair_mask']  # [batch_size, n, n]
+        anchor_mask = data['anchor_mask'].unsqueeze(-1)  # [batch_size, n, 1]
+
+        ligand_mask = (1 - receptor_mask) * seq_mask.unsqueeze(-1)  # [batch_size, n, 1]
 
         coords = xt['coords']  # [batch_size, n, 3]
         atoms = xt['atoms']  # [batch_size, n]
@@ -217,20 +222,11 @@ class E2EModel(torch.nn.Module):
         
         # Create one-hot encoding for atom types
         atom_onehot = F.one_hot(atoms, num_classes=self.num_ligand_atom_types).float()  # [batch_size, n, num_ligand_atom_types]
-        
-        # For receptor atoms, set atom_onehot to zeros; for ligand atoms, use the one-hot encoding
-        receptor_mask_expanded = receptor_mask.unsqueeze(-1).float()  # [batch_size, n, 1]
-        ligand_mask_expanded = (1 - receptor_mask).unsqueeze(-1).float()  # [batch_size, n, 1]
-        atom_onehot = atom_onehot * ligand_mask_expanded  # [batch_size, n, num_ligand_atom_types]
-        
-        # Concatenate h and atom_onehot
-        h_concat = torch.cat([h, atom_onehot], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types]
-        
-        # Add receptor_mask and time step
-        # t: [batch_size] -> expand to [batch_size, n, 1]
+        atom_onehot = atom_onehot * ligand_mask  # [batch_size, n, num_ligand_atom_types]
+                
         t_expanded = t.unsqueeze(-1).unsqueeze(-1).expand(batch_size, n_nodes, 1)
         
-        seq = torch.cat([h_concat, receptor_mask_expanded, t_expanded], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types + 2]
+        seq = torch.cat([h, atom_onehot, anchor_mask, t_expanded], dim=-1)  # [batch_size, n, h_dim + num_ligand_atom_types + 1 + 1]
         
         x_in = coords.clone()  # Save input coordinates
         
@@ -245,7 +241,7 @@ class E2EModel(torch.nn.Module):
         )
         
         # Return coordinate update
-        dx = x_out - coords
+        dx = x_out - x_in
         
         return s_out, dx
 
@@ -277,8 +273,9 @@ class E2EModel(torch.nn.Module):
         gamma_t = self.gamma(t)  # [B]
         alpha_t = torch.sqrt(torch.sigmoid(-gamma_t)).view(-1, 1, 1)  # [B, 1, 1]
         sigma_t = torch.sqrt(torch.sigmoid(gamma_t)).view(-1, 1, 1)  # [B, 1, 1]
-        eps_coords = torch.randn_like(target['coords']) * sample_mask
-        noisy_coords = alpha_t * target['coords'] + sigma_t * eps_coords
+        eps_sample = torch.randn_like(target['coords']) * sample_mask
+        eps_anchor = torch.randn_like(target['coords']) * anchor_mask
+        noisy_coords = alpha_t * (target['coords'] + eps_anchor) + sigma_t * eps_sample
 
         # === Discrete diffusion: atom types ===
         noisy_atoms = self.hmm_ligand_atoms.q_sample(target['atoms'], t_tensor.long())
@@ -290,8 +287,9 @@ class E2EModel(torch.nn.Module):
         }
         
         s_out, pred_eps_coords = self.model_predict(xt, t_tensor, data)
+        
         loss = {
-            'coords': self.coord_loss_fn(pred_eps_coords, eps_coords, sample_mask),
+            'coords': self.coord_loss_fn(pred_eps_coords, eps_anchor+eps_sample, seq_mask),
             'atoms': self.atom_loss_fn(s_out, target['atoms'], ligand_mask),
         }
         
@@ -303,7 +301,8 @@ class E2EModel(torch.nn.Module):
     
     def coord_loss_fn(self, pred, target, mask):
         """Compute coordinate loss (MSE) with mask"""
-        loss = ((pred - target) ** 2 * mask).sum() / mask.sum().clamp(min=1)
+        loss = ((pred - target) ** 2) * mask
+        loss = loss.sum() / mask.sum().clamp(min=1)
         return loss
     
     def atom_loss_fn(self, logits, target, mask):
@@ -315,7 +314,7 @@ class E2EModel(torch.nn.Module):
         )
         loss = (loss * mask.view(-1)).sum() / mask.sum().clamp(min=1)
         return loss
-
+    
     @torch.no_grad()
     def sample_chain(self, data, keep_frames=None):
         """Unified sample_chain method that handles unbatched data (single sample)"""
@@ -384,9 +383,16 @@ class E2EModel(torch.nn.Module):
         sigma_t = torch.sqrt(torch.sigmoid(gamma_t))  # [B, 1, 1]
         
         # Compute mu for sample part
-        mu_coords = xt['coords'] / alpha_t_given_s - (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat_coords  # [B, N, 3]
-        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]       
-        xs_coords = mu_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
+        alpha_s = torch.sqrt(torch.sigmoid(-gamma_s))  # [B, 1, 1]
+        mu_coords = xt['coords'] / alpha_t_given_s -  (sigma2_t_given_s / alpha_t_given_s / sigma_t) * eps_hat_coords * sample_mask  # [B, N, 3]
+        sigma_sampling = sigma_t_given_s * sigma_s / sigma_t  # [B, 1, 1]
+        data['x0_centered'] = x0_centered - eps_hat_coords
+        x0_centered = data['x0_centered']
+        
+        # For next step s: anchor part should be alpha_s * x0, sample part uses reverse diffusion
+        xs_coords = mu_coords * sample_mask + alpha_s * x0_centered * anchor_mask 
+        # xs_coords = mu_coords
+        xs_coords = xs_coords + sigma_sampling * torch.randn_like(mu_coords) * sample_mask  # [B, N, 3]
 
         xs_atoms = self.hmm_ligand_atoms.p_sample(
             xt['atoms'],  # [B, N]

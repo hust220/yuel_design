@@ -1,6 +1,6 @@
 # Project settings
 project = "yuel_design"
-exp_name = "e2e"
+exp_name = "e2efix"
 wandb_entity = None  # Set to your wandb username/team, or None for default
 enable_progress_bar = True
 
@@ -32,8 +32,8 @@ t_weight_power = 0.0
 # E3former parameters
 n_blocks = 8  # Number of E3former blocks
 hidden_nf = 64  # Latent dimension for sequence/pair representations
-in_node_features = 88  # 3 (mol_types: backbone, side_chain, ligand) + 84 (atom_onehot: X + protein_atoms)
-in_edge_features = 2  # pair features: [is_same_residue, ca_distance]
+in_node_features = 88  # 3 (mol_types: backbone, side_chain, ligand) + 51 (atom_onehot: X + protein_atoms)
+in_edge_features = 1  # pair features: [is_same_residue] (no distance)
 num_ligand_atom_types = 20  # Number of ligand atom types (X + 19 ligand elements)
 # Note: seq_input_dim in model will be in_node_features + num_ligand_atom_types + 2 = 54 + 20 + 2 = 76
 # (the +2 is for receptor_mask and time step)
