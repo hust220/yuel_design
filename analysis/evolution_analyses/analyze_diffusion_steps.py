@@ -58,12 +58,13 @@ class Model:
         return self.atoms
 
 
-def parse_pdb_without_biopython(pdb_filepath):
+def parse_pdb_without_biopython(pdb_filepath, residue_filter=None):
     """
     Parse a PDB file and extract models and atoms without using Biopython.
     
     Args:
         pdb_filepath (str): Path to the PDB file
+        residue_filter (str, optional): If provided, only keep atoms with this residue name (e.g., "LIG")
         
     Returns:
         list: List of Model objects
@@ -89,7 +90,10 @@ def parse_pdb_without_biopython(pdb_filepath):
                         models.append(current_model)
                     
                     atom = Atom(line)
-                    current_model.add_atom(atom)
+                    
+                    # Filter by residue name if specified
+                    if residue_filter is None or atom.resname.strip() == residue_filter:
+                        current_model.add_atom(atom)
                 
                 elif line.startswith("ENDMDL"):
                     current_model = None
@@ -107,13 +111,58 @@ def parse_pdb_without_biopython(pdb_filepath):
                 for line in f:
                     if line.startswith("ATOM") or line.startswith("HETATM"):
                         atom = Atom(line)
-                        model.add_atom(atom)
+                        # Filter by residue name if specified
+                        if residue_filter is None or atom.resname.strip() == residue_filter:
+                            model.add_atom(atom)
                 if model.atoms:
                     models.append(model)
         except Exception as e:
             print(f"Error parsing PDB file as single model: {e}")
     
+    # Remove empty models (if filtering removed all atoms)
+    models = [m for m in models if m.atoms]
+    
+    if residue_filter:
+        total_atoms = sum(len(m.atoms) for m in models)
+        if models:
+            print(f"Filtered to {len(models)} models with {total_atoms} {residue_filter} atoms")
+    
     return models
+
+def filter_lig_atoms(models):
+    """
+    Filter models to keep only LIG residue atoms.
+    
+    Args:
+        models: List of Model objects containing atoms from protein and ligand
+    
+    Returns:
+        List of Model objects with only LIG residue atoms
+    """
+    filtered_models = []
+    
+    if not models:
+        print("Warning: No models provided for filtering")
+        return filtered_models
+    
+    print(f"Filtering {len(models)} models to keep only LIG residue atoms...")
+    
+    for model in models:
+        original_atoms = model.get_atoms()
+        lig_atoms = [atom for atom in original_atoms if atom.resname.strip() == "LIG"]
+        
+        if len(lig_atoms) > 0:
+            filtered_model = Model(model.id)
+            for atom in lig_atoms:
+                filtered_model.add_atom(atom)
+            filtered_models.append(filtered_model)
+            
+            if model.id == models[0].id:  # Print info for first model
+                print(f"  Model {model.id}: {len(original_atoms)} total atoms -> {len(lig_atoms)} LIG atoms")
+    
+    print(f"Kept {len(filtered_models)} models with LIG atoms")
+    
+    return filtered_models
 
 def determine_bonds(models, bond_cutoff=1.9):
     if not models:
@@ -352,10 +401,21 @@ def plot_atom_type_changes(atom_type_changes, atom_details_map=None, output_file
     cmap = ListedColormap(["#a2c9ae", "#8e7fb8"])
     ax = sns.heatmap(change_matrix, cmap=cmap, cbar=False, linewidths=0.5)
 
-    # set yticks to be the atom details map
+    # set yticks to be the atom details map (extract atom type only, no id)
     n_atoms = len(atom_details_map)
     ax.set_yticks(range(n_atoms))
-    ax.set_yticklabels([atom_details_map[i] for i in range(n_atoms)])
+    
+    # Extract atom type from labels (remove serial number)
+    # Format is typically "C123" -> "C", "CA456" -> "CA"
+    def extract_atom_type(label_str):
+        # Find the first digit and extract everything before it
+        match = re.match(r'([A-Za-z]+)', label_str)
+        if match:
+            return match.group(1)
+        return label_str  # Fallback to original if no match
+    
+    atom_type_labels = [extract_atom_type(atom_details_map[i]) for i in range(n_atoms)]
+    ax.set_yticklabels(atom_type_labels)
     interval = 20
     ticks = [i for i in range(0, change_matrix.shape[1]+2, interval)]
     ax.set_xticks(ticks)
@@ -569,7 +629,7 @@ def plot_bond_changes(bond_changes, output_plot_dir="plots"):
     interval = 10
     print("len(model_ids)", len(model_ids))
     xticks = [i for i in range(0, len(model_ids)+2, interval)]
-    plt.xticks(xticks, [str(i*5) for i in xticks])
+    plt.xticks(xticks, [str(i) for i in xticks])
     plt.xlim(0, len(model_ids)+1)
     plt.legend()
     plt.grid(True, axis='y', alpha=0.3)
@@ -723,16 +783,18 @@ def plot_bond_and_covariation_network(last_model_atoms, significant_pairs, bonds
 
 #%%
 current_dir = os.path.dirname(os.path.abspath(__file__))
-test_pdb_file = os.path.join(current_dir, "mol_004.pdb")
+test_pdb_file = os.path.join(current_dir, "3jqa_traj.pdb")
 
-models = parse_pdb_without_biopython(test_pdb_file)
+# Parse PDB file and filter to keep only LIG residue atoms
+models = parse_pdb_without_biopython(test_pdb_file, residue_filter="LIG")
+
 bonds_to_track, atom_details_map = determine_bonds(models, bond_cutoff=1.8)
 
-# bond_distance_evolution = track_bonds(models, bonds_to_track)
-# plot_bond_distances(bond_distance_evolution, atom_details_map, output_plot_dir="bond_evolution_plots")
-# plot_average_bond_lengths(bond_distance_evolution, output_plot_dir="bond_evolution_plots")
+bond_distance_evolution = track_bonds(models, bonds_to_track)
+plot_bond_distances(bond_distance_evolution, atom_details_map, output_plot_dir="bond_evolution_plots")
+plot_average_bond_lengths(bond_distance_evolution, output_plot_dir="bond_evolution_plots")
 
-atom_type_changes = track_atom_type_changes(models)
+# atom_type_changes = track_atom_type_changes(models)
 # plot_atom_type_changes(atom_type_changes, atom_details_map, output_filename="atom_evolution_plots/atom_type_changes_matrix.png")
 # print("atom_type_changes", len(atom_type_changes), len(atom_type_changes[0]))
 # summarize_atom_type_changes(atom_type_changes, atom_details_map)
@@ -743,36 +805,36 @@ atom_type_changes = track_atom_type_changes(models)
 # bond_changes = analyze_bond_changes(models, bond_cutoff=1.9)
 # plot_bond_changes(bond_changes, output_plot_dir="bond_evolution_plots")
 
-change_matrix = create_atom_type_change_matrix(atom_type_changes)
+# change_matrix = create_atom_type_change_matrix(atom_type_changes)
 
 #%%
 # 进行 permutation test，得到显著性矩阵
-observed_co, pvals = permutation_test_atom_covariation(change_matrix, n_permutations=1000, random_seed=42)
+# observed_co, pvals = permutation_test_atom_covariation(change_matrix, n_permutations=1000, random_seed=42)
 
 # 只画显著共变的 network（比如 p < 0.05）
-plot_atom_type_change_network(
-    change_matrix,
-    atom_details_map,
-    output_filename="atom_evolution_plots/atom_type_change_network_significant.png",
-    pval_matrix=pvals,
-    pval_cutoff=0.05
-)
+# plot_atom_type_change_network(
+#     change_matrix,
+#     atom_details_map,
+#     output_filename="atom_evolution_plots/atom_type_change_network_significant.png",
+#     pval_matrix=pvals,
+#     pval_cutoff=0.05
+# )
 
 # 也可以继续画原始的 network（如需对比）
 # plot_atom_type_change_network(change_matrix, atom_details_map, threshold=0.1, output_filename="atom_evolution_plots/atom_type_change_network.png")
 
 # %%
 # After permutation test and bond determination
-last_model_atoms = models[-1].get_atoms()
-bonds = determine_bonds_in_model(last_model_atoms, bond_cutoff=1.8)
+# last_model_atoms = models[-1].get_atoms()
+# bonds = determine_bonds_in_model(last_model_atoms, bond_cutoff=1.8)
 # Get significant covar pairs (p < 0.05, upper triangle, i != j)
-significant_pairs = [(i, j) for i in range(pvals.shape[0]) for j in range(i+1, pvals.shape[1]) if pvals[i, j] < 0.05]
-plot_bond_and_covariation_network(
-    last_model_atoms,
-    significant_pairs,
-    bonds,
-    atom_details_map,
-    output_filename="atom_evolution_plots/bond_vs_covariation_network.png"
-)
+# significant_pairs = [(i, j) for i in range(pvals.shape[0]) for j in range(i+1, pvals.shape[1]) if pvals[i, j] < 0.05]
+# plot_bond_and_covariation_network(
+#     last_model_atoms,
+#     significant_pairs,
+#     bonds,
+#     atom_details_map,
+#     output_filename="atom_evolution_plots/bond_vs_covariation_network.png"
+# )
 
 # %%

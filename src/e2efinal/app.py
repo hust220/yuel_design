@@ -86,7 +86,8 @@ def run_e2e_mode(
     data = {k: v.unsqueeze(0).to(device) for k, v in data.items()}
     
     if e2e_checkpoint is None:
-        e2e_checkpoint = pick_latest(['checkpoints/*e2efinal*/*.ckpt'])
+        checkpoint_pattern = str(PROJECT_ROOT / 'checkpoints' / '*e2efinal*' / '*.ckpt')
+        e2e_checkpoint = pick_latest([checkpoint_pattern])
     
     print(f"Loading model from: {e2e_checkpoint}")
     model = LightningWrapper.load_from_checkpoint(e2e_checkpoint, map_location='cpu')
@@ -179,7 +180,6 @@ def _save_model(x: np.ndarray, pocket_info: dict, ligand_atoms: np.ndarray, f, s
     from src.pdb_utils import pdb_line
     
     pocket_atom_names, pocket_residue_names, pocket_res_ids, pocket_chain_ids = _extract_pocket_metadata(pocket_info)
-    ligand_atom_names = pocket_info.get('ligand_atom_names', [])
     pocket_size = len(pocket_atom_names)
     
     serial = start_serial
@@ -200,21 +200,20 @@ def _save_model(x: np.ndarray, pocket_info: dict, ligand_atoms: np.ndarray, f, s
     # Ligand atoms
     for j in range(pocket_size, x.shape[0]):
         cx, cy, cz = x[j]
-        # Use ligand atom name if available
-        ligand_idx = j - pocket_size
-        if ligand_idx < len(ligand_atom_names):
-            atom_name = ligand_atom_names[ligand_idx]
+        # Convert atom type index from ligand_atoms to name
+        if j < len(ligand_atoms):
+            atom_idx = int(ligand_atoms[j])  # Handle both numpy array and torch.Tensor
         else:
-            # Fallback: convert atom type index to name
-            atom_idx = ligand_atoms[j].item() if j < len(ligand_atoms) else 0
-            if atom_idx < len(LIGAND_ATOM_TYPES):
-                atom_name = LIGAND_ATOM_TYPES[atom_idx]
-                if atom_name.startswith('_'):
-                    atom_name = atom_name[1:]
-                elif atom_name == 'X':
-                    atom_name = 'C'
-            else:
+            atom_idx = 0
+        
+        if atom_idx > 0 and atom_idx < len(LIGAND_ATOM_TYPES):
+            atom_name = LIGAND_ATOM_TYPES[atom_idx]
+            if atom_name.startswith('_'):
+                atom_name = atom_name[1:]
+            elif atom_name == 'X':
                 atom_name = 'C'
+        else:
+            atom_name = 'C'  # Default for receptor atoms (atom_idx=0) or invalid indices
         
         f.write(pdb_line(record='HETATM', serial=serial, atom_name=atom_name, res_name='LIG', chain_id='B', res_seq=(pocket_res_ids[-1] + 2) if pocket_res_ids else 1, x=cx, y=cy, z=cz))
         serial += 1
@@ -253,6 +252,7 @@ def save_trajectory(chain, ligand_atoms: torch.Tensor, pocket_info: dict, output
     
     # Extract frames from chain (list of dicts with 'coords' and 'atoms')
     if isinstance(chain, list) and len(chain) > 0 and isinstance(chain[0], dict):
+        # print(11)
         frames = []
         atoms_list = []
         for step_result in chain:
@@ -265,12 +265,14 @@ def save_trajectory(chain, ligand_atoms: torch.Tensor, pocket_info: dict, output
                 atoms = atoms[0] if atoms.shape[0] > 1 else atoms.squeeze(0)
             frames.append(coords.detach().cpu().numpy())
             atoms_list.append(atoms.detach().cpu().numpy())
-        # Use final atoms for all frames (or could use per-frame atoms)
-        atoms = atoms_list[-1] if atoms_list else ligand_atoms.detach().cpu().numpy()
+            # print('atoms_list[-1][-1]:', atoms_list[-1][-1])
     elif isinstance(chain, list):
+        # print(22)
         frames = [c.detach().cpu().numpy() for c in chain]
         atoms = ligand_atoms.detach().cpu().numpy() if isinstance(ligand_atoms, torch.Tensor) else ligand_atoms
+        atoms_list = [atoms] * len(frames)  # Use same atoms for all frames
     else:
+        # print(33)
         arr = chain.detach().cpu().numpy()
         # If shape is (T,N,3)
         if arr.ndim == 3:
@@ -278,9 +280,20 @@ def save_trajectory(chain, ligand_atoms: torch.Tensor, pocket_info: dict, output
         else:
             frames = [arr]
         atoms = ligand_atoms.detach().cpu().numpy() if isinstance(ligand_atoms, torch.Tensor) else ligand_atoms
+        atoms_list = [atoms] * len(frames)  # Use same atoms for all frames
     
+    # Fallback if atoms_list is empty
+    if not atoms_list:
+        default_atoms = ligand_atoms.detach().cpu().numpy() if isinstance(ligand_atoms, torch.Tensor) else ligand_atoms
+        atoms_list = [default_atoms] * len(frames)
+    
+    # print(atoms_list)
     with open(output_path, 'w') as f:
         for idx, x in enumerate(frames):
             f.write(f"MODEL {idx+1:05d}\n")
-            _save_model(x, pocket_info, atoms, f)
+            # Use per-frame atoms
+            # print('atoms_list[idx][-1]:', atoms_list[idx][-1])
+            frame_atoms = atoms_list[idx] if idx < len(atoms_list) else atoms_list[-1]
+            # print('frame_atoms[-1]:', frame_atoms[-1])
+            _save_model(x, pocket_info, frame_atoms, f)
             f.write("ENDMDL\n")

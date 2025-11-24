@@ -65,3 +65,37 @@ def db_connection():
     finally:
         if conn:
             conn.close()
+
+
+def ensure_column_exists(table_name: str, column_name: str, column_definition: str):
+    """
+    Ensure a column exists on a table, adding it if necessary.
+
+    Args:
+        table_name: Name of the target table.
+        column_name: Column to check/add.
+        column_definition: SQL snippet defining the column type and constraints
+                           (e.g., "TEXT", "BOOLEAN DEFAULT FALSE").
+    """
+    with db_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = %s AND column_name = %s
+                """,
+                (table_name, column_name),
+            )
+            exists = c.fetchone() is not None
+            if not exists:
+                c.execute(
+                    sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
+                        sql.Identifier(table_name),
+                        sql.Identifier(column_name),
+                        sql.SQL(column_definition),
+                    )
+                )
+                conn.commit()
+            else:
+                conn.rollback()

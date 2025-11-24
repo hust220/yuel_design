@@ -73,7 +73,7 @@ class DiffusionTransitionMatrix(nn.Module):
         t_broadcast = t.reshape((t.shape[0], *[1] * (x_t.dim())))
         t_is_1 = (t == 1).float().reshape((t.shape[0], *[1] * (x_t.dim())))
         
-        qmats2 = self.q_mats[t - 2].to(dtype=softmaxed.dtype)
+        qmats2 = self.q_mats[t - 1].to(dtype=softmaxed.dtype)
         fact2 = torch.matmul(softmaxed, qmats2)
         
         out = torch.log(fact1 + eps) + torch.log(fact2 + eps)
@@ -88,6 +88,7 @@ class DiffusionTransitionMatrix(nn.Module):
         not_first_step = (t != 1).float().reshape((x.shape[0], *[1] * (x.dim())))
         gumbel_noise = -torch.log(-torch.log(noise))
         sample = torch.argmax(
+            # pred_q_posterior_logits + gumbel_noise, dim=-1
             pred_q_posterior_logits + gumbel_noise * not_first_step, dim=-1
         )
         return sample
@@ -411,6 +412,7 @@ class E2EModel(torch.nn.Module):
             t_tensor = torch.full((batch_size,), t, dtype=torch.float32, device=x.device)  # [1]
             xt = self.sample_step(t_tensor, xt, data_with_x0)
             # Clone tensors to avoid reference issues in chain
+            # print('xt[atoms][-1, -1]:', xt['atoms'][-1, -1])
             chain.append({
                 'coords': xt['coords'].clone(),
                 'atoms': xt['atoms'].clone(),
@@ -422,6 +424,8 @@ class E2EModel(torch.nn.Module):
         seq_mask = data['seq_mask'].unsqueeze(-1)  # [B, N, 1]
         anchor_mask = data['anchor_mask'].unsqueeze(-1)  # [B, N, 1]
         sample_mask = (1 - anchor_mask) * seq_mask  # [B, N, 1] - sample mask
+        receptor_mask = data['receptor_mask'].unsqueeze(-1)  # [B, N, 1]
+        ligand_mask = (1 - receptor_mask) * seq_mask  # [B, N, 1] - ligand mask
         
         # Get centered x0 for anchor
         x0_centered = data['x0_centered']  # [B, N, 3]
@@ -430,11 +434,12 @@ class E2EModel(torch.nn.Module):
         alpha_t = torch.sqrt(torch.sigmoid(-self.gamma(t_tensor))).view(-1, 1, 1)  # [B, 1, 1]
         xt_input = {
             'coords': alpha_t * x0_centered * anchor_mask + xt['coords'] * sample_mask,
-            'atoms': xt['atoms'],
+            'atoms': xt['atoms'] * ligand_mask.squeeze(-1),
         }
 
         atoms_logits, eps_hat_coords = self.model_predict(xt_input, t_tensor, data) # [B, N, num_ligand_atom_types], [B, N, 3]
         eps_hat_coords = eps_hat_coords * sample_mask
+        # print(atoms_logits[-1, -1, :])
 
         s_tensor = t_tensor - 1
         gamma_s = self.gamma(s_tensor).unsqueeze(-1).unsqueeze(-1)  # [B, 1, 1]
@@ -457,9 +462,9 @@ class E2EModel(torch.nn.Module):
         xs_atoms = self.hmm_ligand_atoms.p_sample(
             xt['atoms'],  # [B, N]
             t_tensor.long(),  # [B]
-            atoms_logits,  # [B, N, num_ligand_atom_types]
+            atoms_logits * ligand_mask,  # [B, N, num_ligand_atom_types]
         )  # [B, N]
-
+        # print(xs_atoms[-1, -1])
         return {
             'coords': xs_coords,
             'atoms': xs_atoms,

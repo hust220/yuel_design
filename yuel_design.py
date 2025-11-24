@@ -2,88 +2,52 @@ import argparse
 import os
 import torch
 import numpy as np
-from pathlib import Path
+from rdkit import Chem, Geometry
 
-# Local imports
 from src.console import section, info, success, warn, error
-from src.distance_discretization import get_bin_edges, classes_to_distances
-from src.disc2.app import (
-    run_disc_mode,
-    save_dist_matrix_png,
-    save_dist_matrix_gif,
-)
-from src.disc2.dataset import LIGAND_ATOM_TYPES
-from src.cont2.app import (
-    run_cont_mode,
+from src.e2efinal.app import (
+    run_e2e_mode,
     save_structure_pdb,
-    save_trajectory,
+    save_trajectory as save_trajectory_func,
 )
+from src.e2efinal.dataset import LIGAND_ATOM_TYPES
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='Yuel Design: Protein-Ligand Design Pipeline (Disc + Cont)')
+    p = argparse.ArgumentParser(description='Yuel Design: End-to-End Protein-Ligand Design')
 
-    # Pipeline stages
-    p.add_argument('--pipeline', type=str, default='disc:cont', 
-                   help='Pipeline stages: disc, cont, or disc:cont (default: disc:cont)')
-
-    # Model checkpoints
-    p.add_argument('--disc_checkpoint', type=str, default=None, 
-                   help='Checkpoint path for disc model (distance/atom prediction)')
-    p.add_argument('--cont_checkpoint', type=str, default=None, 
-                   help='Checkpoint path for cont model (coordinate prediction)')
+    # Model checkpoint
+    p.add_argument('--checkpoint', type=str, default=None, 
+                   help='Checkpoint path (None for auto-detection)')
 
     # Input/Output
-    p.add_argument('--input_pdb', type=str, required=True, 
+    p.add_argument('-i', '--input', type=str, required=True, 
                    help='Input protein PDB file')
-    p.add_argument('--output_dir', type=str, default='output', 
-                   help='Output directory for results')
-    
-    # (No save control args needed - all outputs are saved by default)
+    p.add_argument('-o', '--output', type=str, default=None,
+                   help='Output PDB file path (required if -n not specified)')
+    p.add_argument('--output-prefix', type=str, default=None,
+                   help='Output file prefix for multiple molecules (used with -n)')
 
     # Generation parameters
-    p.add_argument('--ligand_size', type=int, required=True, 
-                   help='Total number of ligand atoms to generate (for cont stage, including all atoms)')
-    p.add_argument('--disc_ligand_size', type=int, default=5,
-                   help='Number of reduced ligand atoms for disc stage (non-C + ring centers, default: 5)')
-    p.add_argument('--interaction_cutoff', type=float, default=5.0,
-                   help='Distance cutoff (angstrom) for receptor-ligand interactions (default: 5.0)')
+    p.add_argument('--ligand_size', type=int, default=None, 
+                   help='Number of ligand atoms to generate (None for auto-estimation)')
+    p.add_argument('-n', '--num_molecules', type=int, default=1,
+                   help='Number of molecules to generate (default: 1)')
     p.add_argument('--seed', type=int, default=None, 
                    help='Random seed (None for random)')
     p.add_argument('--device', type=str, default='auto', choices=['auto','cpu','cuda'], 
                    help='Device to use (default: auto)')
+    p.add_argument('--save_trajectory', type=str, default=None,
+                   help='Trajectory file path (optional, supports {index} placeholder)')
+    p.add_argument('--log', type=str, default=None,
+                   help='Log file path to save validation statistics (optional, supports {index} placeholder)')
+    p.add_argument('--max_attempts', type=int, default=20,
+                   help='Max attempts per molecule (default: 20)')
 
     return p.parse_args()
 
 
-def parse_pipeline(pipeline_str: str) -> list:
-    """Parse pipeline string like 'disc:cont' or 'disc' into list of stages"""
-    stage_mapping = {
-        'disc': 'disc', 
-        'disc2': 'disc',
-        'discrete': 'disc',
-        'cont': 'cont',
-        'cont2': 'cont',
-        'continuous': 'cont',
-    }
-    
-    if ':' in pipeline_str:
-        stages = pipeline_str.split(':')
-    else:
-        stages = [pipeline_str]
-    
-    parsed_stages = []
-    for stage in stages:
-        parsed_stage = stage_mapping.get(stage.strip().lower())
-        if parsed_stage is None:
-            raise ValueError(f"Unknown stage: {stage}. Valid stages: {list(stage_mapping.keys())}")
-        parsed_stages.append(parsed_stage)
-    
-    return parsed_stages
-
-
 def pick_device(user_choice: str) -> torch.device:
-    """Select device based on user choice and availability"""
     if user_choice == 'cpu':
         return torch.device('cpu')
     if user_choice == 'cuda' and torch.cuda.is_available():
@@ -92,295 +56,374 @@ def pick_device(user_choice: str) -> torch.device:
 
 
 def ensure_dir(path: str):
-    """Create directory if it doesn't exist"""
-    if path:
+    if path and path != '.':
         os.makedirs(path, exist_ok=True)
 
 
-def build_interaction_index_from_reduced(
-    dist_matrix, 
-    receptor_reduced_coords,
-    ligand_reduced_coords, 
-    receptor_atoms,
-    cutoff_angstrom=5.0, 
-    config_name='b12'
-):
-    """Build interaction index from predicted distance matrix (with reduced indices).
+def build_molecule_from_coords(coords, atom_types):
+    coords = coords.detach().cpu().numpy() if isinstance(coords, torch.Tensor) else coords
+    atom_types = atom_types.detach().cpu().numpy() if isinstance(atom_types, torch.Tensor) else atom_types
     
-    This function:
-    1. Finds receptor-ligand pairs with distance <= cutoff in the reduced distance matrix
-    2. Converts reduced indices to full indices using receptor_atoms mapping
+    mol = Chem.RWMol()
     
-    Args:
-        dist_matrix: [N_r + N_l, N_r + N_l] tensor of distance class indices
-                     where N_r = len(receptor_reduced_coords), N_l = len(ligand_reduced_coords)
-        receptor_reduced_coords: Array of reduced receptor coordinates (CA + non-C + ring centers)
-        ligand_reduced_coords: Array of reduced ligand coordinates (non-C + ring centers)
-        receptor_atoms: List of tuples, each tuple is ([reduced_atoms...], [full_atoms...])
-        cutoff_angstrom: Distance cutoff in angstroms for interactions
-        config_name: Distance discretization config name
-    
-    Returns:
-        List of tuples: [(receptor_full_idx, ligand_full_idx), ...]
-                        where indices are in full atoms space
-    """
-    # Get bin edges to determine cutoff bin
-    bin_edges = get_bin_edges(config_name)
-    
-    # Find the bin index corresponding to cutoff_angstrom
-    cutoff_bin = None
-    for i, edge in enumerate(bin_edges):
-        if cutoff_angstrom <= edge:
-            cutoff_bin = i
-            break
-    
-    if cutoff_bin is None:
-        cutoff_bin = len(bin_edges) - 1
-    
-    info(f"Using distance cutoff: {cutoff_angstrom} Å (bin <= {cutoff_bin})")
-    
-    # Build mapping from reduced receptor index to full receptor index
-    reduced_to_full_receptor = {}
-    reduced_idx = 0
-    full_idx_offset = 0
-    
-    for reduced_atoms_list, full_atoms_list in receptor_atoms:
-        for atom_name in reduced_atoms_list:
-            if atom_name in full_atoms_list:
-                full_atom_idx = full_atoms_list.index(atom_name)
-                reduced_to_full_receptor[reduced_idx] = full_idx_offset + full_atom_idx
-            reduced_idx += 1
-        full_idx_offset += len(full_atoms_list)
-    
-    n_receptor_full = full_idx_offset
-    n_receptor_reduced = len(receptor_reduced_coords)
-    n_ligand_reduced = len(ligand_reduced_coords)
-    
-    # Extract interactions from distance matrix
-    # dist_matrix indices: [0, n_receptor_reduced) = receptor, [n_receptor_reduced, ...) = ligand
-    int_index = []
-    
-    for i_reduced in range(n_receptor_reduced):
-        for j_reduced in range(n_ligand_reduced):
-            ligand_idx_in_matrix = n_receptor_reduced + j_reduced
-            dist_class = dist_matrix[i_reduced, ligand_idx_in_matrix].item()
-            
-            # If distance class <= cutoff_bin, it's an interaction
-            if dist_class <= cutoff_bin:
-                # Convert to full indices
-                receptor_full_idx = reduced_to_full_receptor.get(i_reduced)
-                if receptor_full_idx is None:
-                    continue  # Skip if mapping not found
-                
-                # Ligand reduced atoms are at the front of ligand full atoms
-                # So ligand_reduced_idx j maps to ligand_full_idx j
-                ligand_full_idx = n_receptor_full + j_reduced
-                
-                int_index.append((receptor_full_idx, ligand_full_idx))
-    
-    info(f"Found {len(int_index)} receptor-ligand interactions (distance <= {cutoff_angstrom} Å)")
-    info(f"Receptor: {n_receptor_reduced} reduced atoms -> {n_receptor_full} full atoms")
-    info(f"Ligand: {n_ligand_reduced} reduced atoms")
-    
-    return int_index
-
-
-def convert_ligand_atoms_to_names(ligand_atom_indices):
-    """Convert ligand atom class indices to atom names.
-    
-    Args:
-        ligand_atom_indices: [ligand_size] tensor or numpy array of atom class indices
-    
-    Returns:
-        List of atom names (with _ prefix, e.g., ['_O', '_N', '_C'])
-    """
-    if isinstance(ligand_atom_indices, torch.Tensor):
-        ligand_atom_indices = ligand_atom_indices.cpu().numpy()
-    
-    ligand_atom_names = []
-    for atom_idx in ligand_atom_indices:
+    for atom_idx in atom_types:
         if 0 <= atom_idx < len(LIGAND_ATOM_TYPES):
             atom_name = LIGAND_ATOM_TYPES[atom_idx]
+            if atom_name.startswith('_'):
+                atom_symbol = atom_name[1:]
+            elif atom_name == 'X':
+                atom_symbol = 'C'
+            else:
+                atom_symbol = atom_name
         else:
-            atom_name = '_C'  # Default to carbon
-        ligand_atom_names.append(atom_name)
+            atom_symbol = 'C'
+        mol.AddAtom(Chem.Atom(atom_symbol))
     
-    return ligand_atom_names
+    n_atoms = len(atom_types)
+    if n_atoms == 0:
+        return mol.GetMol()
+    
+    dists = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=2)
+    
+    for i in range(n_atoms):
+        for j in range(i):
+            atom1_idx = atom_types[i]
+            atom2_idx = atom_types[j]
+            
+            if atom1_idx == 0 or atom2_idx == 0:
+                continue
+            
+            atom1_symbol = LIGAND_ATOM_TYPES[atom1_idx] if atom1_idx < len(LIGAND_ATOM_TYPES) else 'C'
+            atom2_symbol = LIGAND_ATOM_TYPES[atom2_idx] if atom2_idx < len(LIGAND_ATOM_TYPES) else 'C'
+            
+            if atom1_symbol.startswith('_'):
+                atom1_symbol = atom1_symbol[1:]
+            if atom2_symbol.startswith('_'):
+                atom2_symbol = atom2_symbol[1:]
+            if atom1_symbol == 'X':
+                atom1_symbol = 'C'
+            if atom2_symbol == 'X':
+                atom2_symbol = 'C'
+            
+            distance = dists[i, j]
+            max_bond_length = get_max_bond_length(atom1_symbol, atom2_symbol)
+            
+            if distance < max_bond_length:
+                mol.AddBond(i, j, Chem.BondType.SINGLE)
+    
+    conf = Chem.Conformer(n_atoms)
+    for i, (x, y, z) in enumerate(coords):
+        conf.SetAtomPosition(i, Geometry.Point3D(float(x), float(y), float(z)))
+    mol.AddConformer(conf)
+    
+    return mol.GetMol()
 
 
-def run_disc_stage(args, device):
-    """Run disc stage: predict distance matrix and atom types"""
-    section("DISC STAGE: Predicting Distance Matrix and Atom Types")
-    
-    # Disc stage ligand_size for reduced atoms (non-C + ring centers)
-    disc_ligand_size = args.disc_ligand_size
-    info(f"Disc stage using ligand_size: {disc_ligand_size} (reduced atoms)")
-    
-    # Read pocket structure
-    info(f"Reading pocket structure from: {args.input_pdb}")
-    with open(args.input_pdb, 'r') as f:
-        pocket_structure = f.read()
-    
-    # Run disc model
-    results, chain, pocket_info = run_disc_mode(
-        pocket_structure=pocket_structure,
-        ligand_size=disc_ligand_size,
-        disc_checkpoint=args.disc_checkpoint,
-        device=device,
-        seed=args.seed,
-    )
-    
-    # Extract predictions
-    dist_matrix = results['dist_matrix']
-    ligand_atoms = results['ligand_atoms']
-    
-    success(f"Predicted distance matrix: {dist_matrix.shape}")
-    success(f"Predicted ligand atoms: {ligand_atoms.shape}")
-    
-    # Save disc outputs to output_dir
-    ensure_dir(args.output_dir)
-    
-    # Save ligand atom names (no need to save classes)
-    ligand_atom_names_list = convert_ligand_atoms_to_names(ligand_atoms)
-    atoms_names_file = os.path.join(args.output_dir, 'ligand_atoms.txt')
-    with open(atoms_names_file, 'w') as f:
-        for atom_name in ligand_atom_names_list:
-            f.write(f"{atom_name}\n")
-    success(f"Saved ligand atoms to: {atoms_names_file}")
-    
-    # Save distance matrix as PNG
-    png_path = os.path.join(args.output_dir, 'dist_matrix.png')
-    save_dist_matrix_png(dist_matrix, png_path, title='Predicted Distance Matrix')
-    success(f"Saved distance matrix PNG to: {png_path}")
-    
-    # Save distance matrix diffusion as GIF
-    if len(chain) > 0:
-        gif_path = os.path.join(args.output_dir, 'dist_matrix_diffusion.gif')
-        save_dist_matrix_gif(chain, gif_path, title='Distance Matrix Diffusion')
-        success(f"Saved diffusion GIF to: {gif_path}")
-    
-    return dist_matrix, ligand_atoms, pocket_info, chain
+def get_max_bond_length(atom1, atom2):
+    bond_lengths = {
+        ('C', 'C'): 1.8, ('C', 'N'): 1.7, ('C', 'O'): 1.6, ('C', 'S'): 2.0,
+        ('N', 'N'): 1.6, ('N', 'O'): 1.5, ('O', 'O'): 1.5, ('S', 'S'): 2.2,
+        ('C', 'F'): 1.5, ('C', 'Cl'): 2.0, ('C', 'Br'): 2.1, ('C', 'I'): 2.3,
+        ('N', 'F'): 1.4, ('O', 'F'): 1.4, ('S', 'F'): 1.8,
+    }
+    pair = tuple(sorted([atom1, atom2]))
+    return bond_lengths.get(pair, 2.5)
 
 
-def run_cont_stage(args, device, dist_matrix, ligand_atoms, pocket_info_disc):
-    """Run cont stage: predict continuous coordinates"""
-    section("CONT STAGE: Predicting Continuous Coordinates")
+def check_ring_sizes(mol):
+    ring_info = mol.GetRingInfo()
+    ring_sizes = []
+    for ring in ring_info.AtomRings():
+        ring_sizes.append(len(ring))
     
-    # Parse pocket using cont2's parse_pocket to get receptor_atoms structure
-    from src.pdb_utils import Structure
-    from io import StringIO
-    from src.cont2.dataset import parse_pocket as parse_pocket_cont
+    invalid_rings = [size for size in ring_sizes if size == 3 or size == 4 or size > 6]
+    return len(invalid_rings) == 0, ring_sizes
+
+
+def check_connectivity(mol):
+    fragments = Chem.GetMolFrags(mol, asMols=True)
+    return len(fragments) == 1
+
+
+def check_kekulization(mol):
+    try:
+        mol_copy = Chem.Mol(mol)
+        Chem.SanitizeMol(mol_copy, sanitizeOps=Chem.SanitizeFlags.SANITIZE_KEKULIZE)
+        return True
+    except:
+        return False
+
+
+def validate_ligand(coords, atom_types, n_receptor):
+    ligand_coords = coords[n_receptor:]
+    ligand_atoms = atom_types[n_receptor:]
     
-    with open(args.input_pdb, 'r') as f:
-        pocket_structure = f.read()
+    non_zero_mask = ligand_atoms != 0
+    if non_zero_mask.sum() == 0:
+        return False, "ring_size", "No ligand atoms found"
     
-    structure = Structure()
-    structure.read(StringIO(pocket_structure))
-    pocket_info_cont = parse_pocket_cont(structure)
+    ligand_coords = ligand_coords[non_zero_mask]
+    ligand_atoms = ligand_atoms[non_zero_mask]
     
-    # Convert predicted ligand atom indices to names (these are REDUCED atoms from disc)
-    ligand_reduced_names = convert_ligand_atoms_to_names(ligand_atoms)
-    n_ligand_reduced = len(ligand_reduced_names)
+    try:
+        mol = build_molecule_from_coords(ligand_coords, ligand_atoms)
+        
+        is_connected = check_connectivity(mol)
+        if not is_connected:
+            return False, "intact", "Ligand is fragmented"
+        
+        valid_rings, ring_sizes = check_ring_sizes(mol)
+        if not valid_rings:
+            return False, "ring_size", f"Invalid ring sizes found: {ring_sizes}"
+        
+        can_kekulize = check_kekulization(mol)
+        if not can_kekulize:
+            return False, "kekulization", "Cannot be kekulized by RDKit"
+        
+        return True, "valid", "Valid"
+    except Exception as e:
+        return False, "ring_size", f"Error building molecule: {str(e)}"
+
+
+def write_validation_log(log_path, n_attempts, is_valid, failure_counts):
+    log_dir = os.path.dirname(log_path) or '.'
+    ensure_dir(log_dir)
+    with open(log_path, 'w') as f:
+        f.write("Validation Statistics\n")
+        f.write("=" * 50 + "\n")
+        f.write(f"Total attempts: {n_attempts}\n")
+        f.write(f"Successful: {1 if is_valid else 0}\n")
+        f.write(f"Failed due to ring size: {failure_counts['ring_size']}\n")
+        f.write(f"Failed due to not intact: {failure_counts['intact']}\n")
+        f.write(f"Failed due to kekulization: {failure_counts['kekulization']}\n")
+
+
+def run_design(
+    pocket_structure,
+    output_pdb_path,
+    ligand_size=None,
+    checkpoint=None,
+    device=None,
+    seed=None,
+    save_trajectory=None,
+    log_path=None,
+    max_attempts=10,
+    verbose=True
+):
+    if verbose:
+        section("E2E MODE: End-to-End Ligand Generation")
     
-    info(f"Disc predicted {n_ligand_reduced} reduced ligand atoms: {ligand_reduced_names}")
+    if isinstance(pocket_structure, (str, bytes)):
+        if isinstance(pocket_structure, bytes):
+            pocket_structure = pocket_structure.decode('utf-8')
+        elif os.path.isfile(pocket_structure):
+            with open(pocket_structure, 'r') as f:
+                pocket_structure = f.read()
     
-    # Use user-specified ligand_size as full ligand size (including C atoms)
-    ligand_full_size = args.ligand_size
-    info(f"Cont stage using ligand_size: {ligand_full_size} (full atoms, including C)")
+    current_seed = seed
+    is_valid = False
+    failure_reason = None
     
-    # Prepare ligand_fixed_atoms (all atoms for cont, padded with C)
-    n_c_atoms = ligand_full_size - n_ligand_reduced
-    if n_c_atoms < 0:
-        error(f"Error: User-specified ligand_size ({ligand_full_size}) < reduced atoms from disc ({n_ligand_reduced})")
-        error(f"The ligand_size must be >= {n_ligand_reduced} to accommodate the predicted non-C atoms")
-        raise ValueError(f"ligand_size must be >= {n_ligand_reduced}")
+    failure_counts = {
+        'ring_size': 0,
+        'intact': 0,
+        'kekulization': 0
+    }
     
-    ligand_fixed_atoms = ligand_reduced_names + ['_C'] * n_c_atoms
-    info(f"Ligand composition: {n_ligand_reduced} reduced (from disc) + {n_c_atoms} C = {ligand_full_size} total")
+    final_coords = None
+    final_atoms = None
+    chain = []
+    pocket_info = None
     
-    # Create dummy ligand_reduced_coords (we don't actually need the coords, just the count)
-    ligand_reduced_coords = np.zeros((n_ligand_reduced, 3))
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            current_seed = np.random.randint(0, 2**31)
+            if verbose:
+                info(f"Attempt {attempt + 1}/{max_attempts}: Redesigning ligand...")
+        
+        final_coords, final_atoms, chain, pocket_info = run_e2e_mode(
+            pocket_structure=pocket_structure,
+            ligand_size=ligand_size,
+            e2e_checkpoint=checkpoint,
+            device=device,
+            seed=current_seed,
+        )
+        
+        n_receptor = len(pocket_info.get('full_coords', []))
+        if n_receptor == 0:
+            receptor_mask = (final_atoms == 0).cpu().numpy() if isinstance(final_atoms, torch.Tensor) else (final_atoms == 0)
+            n_receptor = receptor_mask.sum()
+        
+        is_valid, failure_reason, message = validate_ligand(final_coords, final_atoms, n_receptor)
+        
+        if is_valid:
+            if verbose:
+                success(f"Predicted coordinates: {final_coords.shape}")
+                success(f"Predicted atom types: {final_atoms.shape}")
+                if attempt > 0:
+                    success(f"Valid ligand generated after {attempt + 1} attempts")
+            break
+        else:
+            if failure_reason in failure_counts:
+                failure_counts[failure_reason] += 1
+            if verbose:
+                warn(f"Validation failed: {message}")
+            if attempt == max_attempts - 1:
+                if verbose:
+                    error(f"Failed to generate valid ligand after {max_attempts} attempts")
+                    error("Saving the last generated structure anyway")
+                break
     
-    # Convert distance matrix to interaction index
-    receptor_reduced_coords = np.array(pocket_info_disc['coords'])
-    receptor_atoms = pocket_info_cont['atoms']  # This has the (reduced, full) structure
+    n_attempts = attempt + 1
     
-    int_index = build_interaction_index_from_reduced(
-        dist_matrix=dist_matrix,
-        receptor_reduced_coords=receptor_reduced_coords,
-        ligand_reduced_coords=ligand_reduced_coords,
-        receptor_atoms=receptor_atoms,
-        cutoff_angstrom=args.interaction_cutoff,
-        config_name='b12'
-    )
+    if log_path:
+        write_validation_log(log_path, n_attempts, is_valid, failure_counts)
+        if verbose:
+            info(f"Saved validation statistics to: {log_path}")
     
-    if len(int_index) == 0:
-        warn("Warning: No interactions found! The cont model may not work well.")
-        warn("Consider increasing --interaction_cutoff or using a different distance prediction.")
+    if output_pdb_path:
+        output_dir = os.path.dirname(output_pdb_path) or '.'
+        ensure_dir(output_dir)
+        save_structure_pdb(final_coords, final_atoms, pocket_info, output_pdb_path)
+        if verbose:
+            success(f"Saved predicted structure to: {output_pdb_path}")
     
-    # Run cont model with FULL ligand size
-    final_coords, chain, pocket_info_cont_final = run_cont_mode(
-        pocket_structure=pocket_structure,
-        int_index=int_index,
-        ligand_fixed_atoms=ligand_fixed_atoms,
-        ligand_size=ligand_full_size,
-        cont_checkpoint=args.cont_checkpoint,
-        device=device,
-        seed=args.seed,
-    )
+    if save_trajectory and len(chain) > 0:
+        traj_dir = os.path.dirname(save_trajectory) or '.'
+        ensure_dir(traj_dir)
+        save_trajectory_func(chain, final_atoms, pocket_info, save_trajectory)
+        if verbose:
+            success(f"Saved trajectory to: {save_trajectory}")
     
-    success(f"Predicted coordinates: {final_coords.shape}")
+    return {
+        'is_valid': is_valid,
+        'failure_reason': failure_reason,
+        'n_attempts': n_attempts,
+        'n_failures_ring_size': failure_counts['ring_size'],
+        'n_failures_intact': failure_counts['intact'],
+        'n_failures_kekulization': failure_counts['kekulization'],
+    }
+
+
+def run(args, device):
+    if isinstance(args.input, (bytes, str)) and os.path.isfile(args.input):
+        info(f"Reading pocket structure from: {args.input}")
     
-    # Save cont outputs to output_dir (same as disc)
-    # Save predicted structure
-    coords_pdb_path = os.path.join(args.output_dir, 'predicted_structure.pdb')
-    save_structure_pdb(final_coords, pocket_info_cont_final, coords_pdb_path)
-    success(f"Saved predicted structure to: {coords_pdb_path}")
+    # Check arguments
+    if args.num_molecules > 1 and args.output_prefix is None:
+        error("--output-prefix is required when generating multiple molecules (-n > 1)")
+        return
     
-    # Save trajectory
-    if len(chain) > 0:
-        traj_path = os.path.join(args.output_dir, 'trajectory.pdb')
-        save_trajectory(chain, pocket_info_cont_final, traj_path)
-        success(f"Saved trajectory to: {traj_path}")
+    if args.num_molecules == 1 and args.output is None:
+        error("--output is required when generating a single molecule (-n=1)")
+        return
     
-    return final_coords, chain
+    # Read pocket structure once
+    pocket_structure = args.input
+    if os.path.isfile(pocket_structure):
+        with open(pocket_structure, 'r') as f:
+            pocket_structure = f.read()
+    
+    # Generate multiple molecules
+    if args.num_molecules > 1:
+        section(f"Generating {args.num_molecules} molecules")
+        
+        base_seed = args.seed if args.seed is not None else np.random.randint(0, 2**31)
+        valid_count = 0
+        failed_count = 0
+        
+        for i in range(1, args.num_molecules + 1):
+            # Generate output file paths
+            if args.output_prefix:
+                output_pdb = f"{args.output_prefix}_{i}.pdb"
+                save_traj = None
+                if args.save_trajectory:
+                    save_traj = args.save_trajectory.replace('{index}', str(i))
+                log_path = None
+                if args.log:
+                    log_path = args.log.replace('{index}', str(i))
+            else:
+                output_pdb = args.output
+                save_traj = args.save_trajectory
+                log_path = args.log
+            
+            # Use different seed for each molecule
+            current_seed = base_seed + i if base_seed is not None else None
+            
+            info(f"Generating molecule {i}/{args.num_molecules}...")
+            
+            # Keep retrying until valid
+            attempt_count = 0
+            while True:
+                attempt_count += 1
+                if attempt_count > 1:
+                    current_seed = np.random.randint(0, 2**31)
+                    info(f"  Retry attempt {attempt_count} with seed={current_seed}")
+                
+                result = run_design(
+                    pocket_structure=pocket_structure,
+                    output_pdb_path=output_pdb,
+                    ligand_size=args.ligand_size,
+                    checkpoint=args.checkpoint,
+                    device=device,
+                    seed=current_seed,
+                    save_trajectory=save_traj,
+                    log_path=log_path,
+                    max_attempts=args.max_attempts,
+                    verbose=False  # Less verbose for batch generation
+                )
+                
+                if result['is_valid']:
+                    success(f"  ✓ Molecule {i} generated successfully in {result['n_attempts']} attempts")
+                    valid_count += 1
+                    break
+                else:
+                    if attempt_count >= 10:  # Limit external retries
+                        warn(f"  ✗ Molecule {i} failed after {attempt_count} external retries: {result['failure_reason']}")
+                        failed_count += 1
+                        break
+                    warn(f"  ✗ Molecule {i} failed: {result['failure_reason']}, retrying with new seed...")
+        
+        section("Summary")
+        success(f"Generated {valid_count}/{args.num_molecules} valid molecules")
+        if failed_count > 0:
+            warn(f"Failed: {failed_count}/{args.num_molecules} molecules")
+    else:
+        # Single molecule generation
+        result = run_design(
+            pocket_structure=pocket_structure,
+            output_pdb_path=args.output,
+            ligand_size=args.ligand_size,
+            checkpoint=args.checkpoint,
+            device=device,
+            seed=args.seed,
+            save_trajectory=args.save_trajectory,
+            log_path=args.log,
+            max_attempts=args.max_attempts,
+            verbose=True
+        )
+        
+        if result['is_valid']:
+            success("Molecule generated successfully!")
+        else:
+            error(f"Molecule generation failed: {result['failure_reason']}")
+    
+    return result if args.num_molecules == 1 else None
 
 
 def main():
     args = parse_args()
     
-    # Parse pipeline stages
-    stages = parse_pipeline(args.pipeline)
-    info(f"Running pipeline: {' -> '.join(stages)}")
-    
-    # Select device
     device = pick_device(args.device)
     info(f"Using device: {device}")
     
-    # Set random seed
     if args.seed is not None:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         info(f"Set random seed: {args.seed}")
     
-    # Run pipeline stages
-    dist_matrix = None
-    ligand_atoms = None
-    pocket_info = None
-    
-    for stage in stages:
-        if stage == 'disc':
-            dist_matrix, ligand_atoms, pocket_info, disc_chain = run_disc_stage(args, device)
-        
-        elif stage == 'cont':
-            if dist_matrix is None or ligand_atoms is None:
-                error("Error: 'cont' stage requires 'disc' stage to run first!")
-                error("Please use --pipeline disc:cont or run disc stage separately.")
-                return
-            
-            final_coords, cont_chain = run_cont_stage(args, device, dist_matrix, ligand_atoms, pocket_info)
-    
-    success("Pipeline completed successfully!")
+    run(args, device)
+    success("Completed successfully!")
 
 
 if __name__ == "__main__":
