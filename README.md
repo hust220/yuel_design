@@ -42,7 +42,7 @@ You can get your API key from [wandb.ai/settings](https://wandb.ai/settings).
 
 ```shell
 mkdir -p checkpoints
-wget https://zenodo.org/records/15467850/files/moad.ckpt?download=1 -O checkpoints/moad.ckpt
+wget https://zenodo.org/records/17702010/files/moad.ckpt?download=1 -O checkpoints/moad.ckpt
 ```
 
 ### 2. Generate Molecules
