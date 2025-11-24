@@ -58,8 +58,8 @@ class FileCache:
                 try:
                     with open(cache_path, 'rb') as f:
                         return pickle.load(f)
-                except (pickle.PickleError, EOFError, FileNotFoundError):
-                    # Remove corrupted cache file
+                except (pickle.PickleError, EOFError, FileNotFoundError, ModuleNotFoundError, ImportError):
+                    # Remove corrupted cache file (may be due to version incompatibility)
                     if os.path.exists(cache_path):
                         os.remove(cache_path)
             return None

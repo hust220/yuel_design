@@ -9,7 +9,6 @@ from src.pdb_utils import Structure
 from src.cache import FileCache
 from src.db_utils import db_connection
 from src.const import PROTEIN_ATOM_TYPES
-# from src.disc2.dataset import detect_ligand_rings
 
 # Define unified atom types for coarse-grained representation
 # Protein atoms: CA + all non-C PDB atoms (from src.const.PROTEIN_ATOM_TYPES)
