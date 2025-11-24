@@ -7,13 +7,10 @@
 !yuel_design.py
 !LICENSE
 
-# Don't exclude the src, configs, data/MOAD, tests, and resources directories
+# Don't exclude the src and data/MOAD directories
 !src/
-!configs/
 !data/
 !data/MOAD/
-!tests/
-!resources/
 
 # Include Python files in src and its subdirectories
 src/*
@@ -22,26 +19,18 @@ src/*
 !src/**/
 !src/**/*.py
 
-# Include everything in configs
-configs/*
-!configs/*
-
 # Include Python files in data and its subdirectories, and README.md in data/MOAD
 data/*
 !data/*.py
+!data/**/
 !data/**/*.py
 !data/MOAD/README.md
 
-# Include Python files in tests and its subdirectories
-tests/*
-!tests/
-!tests/*.py
-!tests/**/
-!tests/**/*.py
-
-# Include fpscores.pkl.gz in resources
-resources/*
-!resources/fpscores.pkl.gz
+# Ignore non-MOAD datasets while keeping them locally
+data/casf/
+data/geom/
+data/geom_moad/
+data/zinc/
 
 # Exclude Python cache files
 __pycache__/
