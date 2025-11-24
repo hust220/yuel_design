@@ -148,17 +148,31 @@ Training requires:
    - Create necessary indexes for efficient queries
    - Display statistics about the loaded data
    
-4. **Split dataset into train/val/test sets**:
+4. **Split dataset into train/test (and optional val) sets**:
    
-   After initializing the database, run the split script from the project root to add the `split` column and assign train/val/test labels:
+   We provide a similarity-constrained splitter that enforces an 8:2 train/test ratio while preventing homologous proteins or near-identical ligands from being placed across splits.
+   
+   ```shell
+   python data/MOAD/similarity_constrained_split.py \
+       --metadata data/MOAD/moad_metadata.csv \
+       --output data/MOAD/moad_split.csv \
+       --complex-id-column complex_id \
+       --protein-sequence-column protein_sequence \
+       --pocket-pdb-column pocket_pdb \
+       --ligand-smiles-column ligand_smiles
+   ```
+   
+   **Additional tools required for similarity-constrained splitting**
+   - `makeblastdb` and `blastp` from the BLAST+ suite (sequence similarity)
+   - `TM-align` (binding pocket structural comparison)
+   
+   These tools are only needed to run `similarity_constrained_split.py`; the rest of the project does not depend on them. If installing BLAST+ or TM-align is problematic on your system, fall back to the simpler splitter:
+   
    ```shell
    python data/MOAD/split_moad.py
    ```
    
-   This script will:
-   - Add a `split` column to the `moad_pockets` table if it doesn't exist
-   - Randomly assign splits: ~80% train, ~15% test, 50 samples for validation
-   - Display a summary of the split distribution
+   `split_moad.py` assigns splits purely at random (with ~80% train, ~15% test, 50 validation samples) and does not require the external binaries above.
    
    See `DATABASE_SCHEMA.md` for details about the database schema.
 
