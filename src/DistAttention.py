@@ -62,6 +62,9 @@ class DistAttention(nn.Module):
         # z = self.norm2(z)
         # z = z + self.ffn1(z)
 
+        # 问题：1. 缺乏归一化
+        # 2. 缺乏多头注意力
+
         h = self.norm1(h)
         Q1 = self.linear_Q1(h) # (b, n, n, d)
         K1 = self.linear_K1(h) # (b, n, n, d)

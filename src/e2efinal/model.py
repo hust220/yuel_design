@@ -412,9 +412,10 @@ class E2EModel(torch.nn.Module):
             t_tensor = torch.full((batch_size,), t, dtype=torch.float32, device=x.device)  # [1]
             xt = self.sample_step(t_tensor, xt, data_with_x0)
             # Clone tensors to avoid reference issues in chain
+            # Add anchor_mean to coords to restore original coordinate system
             # print('xt[atoms][-1, -1]:', xt['atoms'][-1, -1])
             chain.append({
-                'coords': xt['coords'].clone(),
+                'coords': (xt['coords'] + anchor_mean).clone(),
                 'atoms': xt['atoms'].clone(),
             })
 

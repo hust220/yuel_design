@@ -11,6 +11,7 @@
 !src/
 !data/
 !data/MOAD/
+!scripts/
 
 # Include Python files in src and its subdirectories
 src/*
@@ -25,6 +26,11 @@ data/*
 !data/**/
 !data/**/*.py
 !data/MOAD/README.md
+
+# Include scripts directory but exclude .sh files
+scripts/*
+!scripts/*.py
+scripts/*.sh
 
 # Ignore non-MOAD datasets while keeping them locally
 data/casf/

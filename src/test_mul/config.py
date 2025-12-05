@@ -13,7 +13,7 @@ log_iterations = 20
 checkpoints = "checkpoints"
 seed = 42
 device = "cuda"
-resume = None  # Set to experiment name to resume training
+resume = None
 
 # Memory settings
 cache_mode = "file"  # No caching (recompute features each time)

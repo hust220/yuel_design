@@ -90,7 +90,12 @@ def run_e2e_mode(
         e2e_checkpoint = pick_latest([checkpoint_pattern])
     
     print(f"Loading model from: {e2e_checkpoint}")
-    model = LightningWrapper.load_from_checkpoint(e2e_checkpoint, map_location='cpu')
+    # For checkpoints saved with full objects, disable weights_only to allow unpickling
+    model = LightningWrapper.load_from_checkpoint(
+        e2e_checkpoint,
+        map_location='cpu',
+        weights_only=False,
+    )
     model = model.eval()
     model = model.to(device)
     
