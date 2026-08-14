@@ -26,13 +26,12 @@ def load_db_config():
         'port': config['DB_PORT']
     }
 
-DB_PARAMS = load_db_config()
-
 def create_connection():
+    db_params = load_db_config()
     attempts = 0
     while True:
         try:
-            conn = psycopg2.connect(**DB_PARAMS)
+            conn = psycopg2.connect(**db_params)
             conn.autocommit = False
             return conn
         except psycopg2.OperationalError as e:
@@ -46,12 +45,13 @@ def create_connection():
 @contextmanager
 def db_connection():
     """Database connection with retry mechanism"""
+    db_params = load_db_config()
     attempts = 0
     conn = None
     try:
         while True:
             try:
-                conn = psycopg2.connect(**DB_PARAMS)
+                conn = psycopg2.connect(**db_params)
                 conn.autocommit = False
                 break
             except psycopg2.OperationalError as e:
